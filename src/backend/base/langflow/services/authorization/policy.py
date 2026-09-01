@@ -114,7 +114,8 @@ def project_flow_actions(permission_level: str) -> frozenset[str]:
         Child actions, including creation for editable projects. This does not
         grant access to sibling projects, recursively nested folders, or shares.
     """
-    actions = share_actions("flow", permission_level)
+    # A project grant must not authorize deletion of collaborator-owned children.
+    actions = share_actions("flow", permission_level) - {FlowAction.DELETE.value}
     if FlowAction.WRITE.value in actions:
         return actions | {FlowAction.CREATE.value}
     return actions

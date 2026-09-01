@@ -61,13 +61,13 @@ def test_unknown_permission_levels_grant_nothing(level: str) -> None:
         ("read", {"read"}),
         ("execute", {"read", "execute"}),
         ("write", {"read", "execute", "write", "create"}),
-        ("admin", {"read", "execute", "write", "create", "delete"}),
+        ("admin", {"read", "execute", "write", "create"}),
     ],
 )
 def test_project_inheritance_applies_to_children_not_project_execute(level: str, expected: set[str]) -> None:
     assert project_flow_actions(level) == expected
     assert "execute" not in share_actions("project", level)
-    assert "deploy" not in project_flow_actions(level)
+    assert not project_flow_actions(level) & {"deploy", "delete"}
 
 
 def test_direct_share_downgrade_does_not_cancel_an_independent_team_edit_grant() -> None:

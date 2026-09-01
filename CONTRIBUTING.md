@@ -2,6 +2,21 @@
 
 Thank you for your interest in contributing!
 
+## Team-sharing work in this fork
+
+For the approved `auth_share_implementation_plan.md` implementation, write only
+to `feat/auth-team-sharing` in `yazeedhasan97/langflow`. The delivery PR targets
+this fork's `main`; implementation work must not push directly to main/master,
+merge the PR, or modify the upstream repository.
+
+The [implementation and verification record](docs/auth-team-sharing-verification.md)
+distinguishes completed work from pending integration and tests. Its existence
+does not indicate the feature is ready to merge.
+
+The upstream contribution instructions below apply to an optional, separately
+requested submission to `langflow-ai/langflow`. They do not change this fork's
+implementation destination.
+
 ## How to Contribute
 
 1. Fork the [Langflow GitHub repository](https://github.com/langflow-ai/langflow).
