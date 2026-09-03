@@ -2,9 +2,14 @@ import { fireEvent, render, renderHook, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 const mockUseGetEffectivePermissions = jest.fn();
+const mockUseGetAuthorizationCapabilities = jest.fn();
 jest.mock("@/controllers/API/queries/permissions", () => ({
   useGetEffectivePermissions: (...args: unknown[]) =>
     mockUseGetEffectivePermissions(...args),
+}));
+jest.mock("@/controllers/API/queries/authorization", () => ({
+  useGetAuthorizationCapabilities: (...args: unknown[]) =>
+    mockUseGetAuthorizationCapabilities(...args),
 }));
 
 import {
@@ -25,6 +30,28 @@ function setMockedPermissions(
   });
 }
 
+function setMockedCapabilities(
+  enforcementActive = true,
+  flags?: { isLoading?: boolean; isError?: boolean },
+) {
+  mockUseGetAuthorizationCapabilities.mockReturnValue({
+    data: flags?.isLoading
+      ? undefined
+      : {
+          enforcement_active: enforcementActive,
+          service_ready: true,
+          team_roles_supported: true,
+          user_team_sharing_supported: true,
+          share_modes: ["execute", "write"],
+          conditional_writes_required: true,
+          can_administer_platform: false,
+          can_create_team: false,
+        },
+    isLoading: flags?.isLoading ?? false,
+    isError: flags?.isError ?? false,
+  });
+}
+
 function flowWrapper(resourceIds: string[]) {
   return ({ children }: { children: ReactNode }) => (
     <PermissionsProvider resourceType="flow" resourceIds={resourceIds}>
@@ -34,16 +61,18 @@ function flowWrapper(resourceIds: string[]) {
 }
 
 describe("usePermissions without a provider", () => {
-  it("fail-opens: can() always returns true", () => {
+  it("fails closed when no provider resolved authorization", () => {
     const { result } = renderHook(() => usePermissions());
-    expect(result.current.can("flow-1", "delete")).toBe(true);
+    expect(result.current.can("flow-1", "delete")).toBe(false);
     expect(result.current.permissions).toBeUndefined();
+    expect(result.current.isUnavailable).toBe(true);
   });
 });
 
 describe("PermissionsProvider gating", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    setMockedCapabilities();
   });
 
   it("keeps every action enabled when the pass-through returns all actions", () => {
@@ -67,12 +96,22 @@ describe("PermissionsProvider gating", () => {
     expect(result.current.can("flow-1", "write")).toBe(false);
   });
 
-  it("fail-opens while the request is still loading", () => {
+  it("fails closed while the request is still loading", () => {
     setMockedPermissions(undefined, { isLoading: true });
     const { result } = renderHook(() => usePermissions(), {
       wrapper: flowWrapper(["flow-1"]),
     });
+    expect(result.current.can("flow-1", "delete")).toBe(false);
+  });
+
+  it("uses the fallback only when the server disables enforcement", () => {
+    setMockedPermissions(undefined, { isError: true });
+    setMockedCapabilities(false);
+    const { result } = renderHook(() => usePermissions(), {
+      wrapper: flowWrapper(["flow-1"]),
+    });
     expect(result.current.can("flow-1", "delete")).toBe(true);
+    expect(result.current.capability("flow-1", "can_manage_shares")).toBe(true);
   });
 
   it("can preserve the previous permission map while resource ids change", () => {
@@ -105,6 +144,7 @@ describe("PermissionsProvider gating", () => {
 describe("useIsFlowReadOnly", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    setMockedCapabilities();
   });
 
   it("fails closed while flow permissions are loading", () => {
@@ -131,15 +171,16 @@ describe("useIsFlowReadOnly", () => {
     expect(result.current).toBe(false);
   });
 
-  it("keeps the non-RBAC fallback writable without a provider", () => {
+  it("fails closed without a provider", () => {
     const { result } = renderHook(() => useIsFlowReadOnly("flow-1"));
-    expect(result.current).toBe(false);
+    expect(result.current).toBe(true);
   });
 });
 
 describe("useIsFlowPermissionPending", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    setMockedCapabilities();
   });
 
   it("is true while flow permissions are loading", () => {
@@ -176,7 +217,7 @@ describe("useIsFlowPermissionPending", () => {
     expect(result.current).toBe(false);
   });
 
-  it("is false without a provider, matching the non-RBAC fallback", () => {
+  it("is false without a provider because unavailable is not loading", () => {
     const { result } = renderHook(() => useIsFlowPermissionPending("flow-1"));
     expect(result.current).toBe(false);
   });
@@ -207,6 +248,7 @@ describe("useIsFlowPermissionPending", () => {
 describe("component affordance gating", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    setMockedCapabilities();
   });
 
   function DeleteButton({ onDelete }: { onDelete: () => void }) {

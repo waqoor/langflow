@@ -13,6 +13,26 @@ from lfx.services.authorization import AuthorizationMutationKind, AuthorizationM
 _RECOVERY_DETAIL = "At least one recovery administrator is required."
 
 
+class _FirstResult:
+    def __init__(self, value):
+        self.value = value
+
+    def first(self):
+        return self.value
+
+
+@pytest.fixture(autouse=True)
+def isolate_user_route_from_team_lifecycle(monkeypatch):
+    """These route-ordering tests isolate the separately tested team repair service."""
+    from langflow.api.v1 import users
+    from langflow.services.authorization.team_management import UserTeamLifecycleResult
+
+    async def unchanged_team_state(*_args, **_kwargs):
+        return UserTeamLifecycleResult((), (), (), ())
+
+    monkeypatch.setattr(users, "apply_user_team_lifecycle", unchanged_team_state)
+
+
 class _LifecycleService:
     def __init__(self, events: list[str], *, fail_stage: bool = False) -> None:
         self.events = events
@@ -181,9 +201,9 @@ async def test_user_disable_validates_and_stages_in_transaction_order(monkeypatc
     async def commit():
         events.append("commit")
 
-    async def get_user_by_id(_session, _user_id):
+    async def read_user(_statement):
         events.append("read")
-        return target
+        return _FirstResult(target)
 
     audit_calls = []
 
@@ -193,7 +213,8 @@ async def test_user_disable_validates_and_stages_in_transaction_order(monkeypatc
         return True
 
     session.commit.side_effect = commit
-    monkeypatch.setattr(users, "get_user_by_id", get_user_by_id)
+    session.get_bind = Mock(return_value=SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
+    session.exec.side_effect = read_user
     monkeypatch.setattr(users, "update_user", update_user)
     monkeypatch.setattr(users, "get_authorization_service", lambda: service)
     monkeypatch.setattr(users, "stage_audit_decision", stage_audit)
@@ -223,6 +244,7 @@ async def test_user_disable_validates_and_stages_in_transaction_order(monkeypatc
                 "event": AUDIT_EVENT_MUTATION,
                 "fields_changed": ["is_active"],
                 "lifecycle_kind": AuthorizationMutationKind.USER_DISABLED.value,
+                "teams_deactivated": [],
             },
         }
     ]
@@ -246,9 +268,9 @@ async def test_ordinary_user_patch_stages_audit_without_password_or_values(monke
     session = AsyncMock()
     audit_calls = []
 
-    async def get_user_by_id(_session, _user_id):
+    async def read_user(_statement):
         events.append("read")
-        return target
+        return _FirstResult(target)
 
     async def update_user(_target, update, _session):
         events.append("mutate")
@@ -265,7 +287,7 @@ async def test_ordinary_user_patch_stages_audit_without_password_or_values(monke
         return True
 
     session.commit.side_effect = commit
-    monkeypatch.setattr(users, "get_user_by_id", get_user_by_id)
+    session.exec.side_effect = read_user
     monkeypatch.setattr(users, "update_user", update_user)
     monkeypatch.setattr(
         users,
@@ -294,6 +316,7 @@ async def test_ordinary_user_patch_stages_audit_without_password_or_values(monke
                 "event": AUDIT_EVENT_MUTATION,
                 "fields_changed": ["username"],
                 "lifecycle_kind": None,
+                "teams_deactivated": [],
             },
         }
     ]
@@ -324,7 +347,7 @@ async def test_user_patch_audit_stage_failure_rolls_back_before_commit(monkeypat
         msg = "audit staging failed"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr(users, "get_user_by_id", AsyncMock(return_value=target))
+    session.exec.return_value = _FirstResult(target)
     monkeypatch.setattr(users, "update_user", update_user)
     monkeypatch.setattr(users, "get_authorization_service", lambda: _LifecycleService([]))
     monkeypatch.setattr(users, "stage_audit_decision", fail_audit)
@@ -439,12 +462,13 @@ async def test_user_patch_lock_kind_is_advisory_before_state_read(monkeypatch):
     async def commit():
         events.append("commit")
 
-    async def get_user_by_id(_session, _user_id):
+    async def read_user(_statement):
         events.append("read")
-        return target
+        return _FirstResult(target)
 
     session.commit.side_effect = commit
-    monkeypatch.setattr(users, "get_user_by_id", get_user_by_id)
+    session.get_bind = Mock(return_value=SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
+    session.exec.side_effect = read_user
     monkeypatch.setattr(users, "update_user", update_user)
     monkeypatch.setattr(users, "get_authorization_service", lambda: service)
     monkeypatch.setattr(users, "audit_decision", AsyncMock())
@@ -482,7 +506,8 @@ async def test_user_lifecycle_stage_failure_prevents_commit(monkeypatch):
         events.append("mutate")
         return target
 
-    monkeypatch.setattr(users, "get_user_by_id", AsyncMock(return_value=target))
+    session.get_bind = Mock(return_value=SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
+    session.exec.return_value = _FirstResult(target)
     monkeypatch.setattr(users, "update_user", update_user)
     monkeypatch.setattr(users, "get_authorization_service", lambda: service)
 
@@ -522,7 +547,8 @@ async def test_user_lifecycle_policy_rejection_is_409_without_mutation(monkeypat
         raise AuthorizationMutationRejected(_RECOVERY_DETAIL)
 
     service.validate_identity_mutation = reject
-    monkeypatch.setattr(users, "get_user_by_id", AsyncMock(return_value=target))
+    session.get_bind = Mock(return_value=SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
+    session.exec.return_value = _FirstResult(target)
     monkeypatch.setattr(users, "update_user", update)
     monkeypatch.setattr(users, "get_authorization_service", lambda: service)
     monkeypatch.setattr(users, "audit_decision", audit)

@@ -615,8 +615,8 @@ def register_all_service_factories() -> None:
     # Override LFX's no-op auth service with Langflow's full JWT implementation
     service_manager.register_service_class(ServiceType.AUTH_SERVICE, AuthService, override=True)
     service_manager.register_factory(auth_factory.AuthServiceFactory())
-    # Same pattern as ``auth_service``: register the OSS pass-through here with
-    # ``override=True`` so Langflow always has a default. A registered
+    # Same pattern as ``auth_service``: register Langflow's native canonical-table
+    # authorization service here with ``override=True``. A registered
     # authorization plugin replaces it by listing its class in
     # ``LANGFLOW_CONFIG_DIR/lfx.toml`` (config files use ``override=True`` via
     # ``_discover_from_config``). Plain entry-point discovery uses
@@ -696,7 +696,12 @@ async def hydrate_catalog_policy() -> None:
         await logger.awarning("Catalog policy hydration failed; continuing with allow-all policy: %s", exc)
 
 
-async def initialize_services(*, fix_migration: bool = False, skip_superuser_setup: bool = False) -> None:
+async def initialize_services(
+    *,
+    fix_migration: bool = False,
+    skip_superuser_setup: bool = False,
+    skip_authorization_readiness: bool = False,
+) -> None:
     """Initialize all the services needed."""
     from langflow.helpers.windows_postgres_helper import configure_windows_postgres_event_loop
 
@@ -750,6 +755,36 @@ async def initialize_services(*, fix_migration: bool = False, skip_superuser_set
             await get_db_service().assign_orphaned_flows_to_superuser()
         except sqlalchemy_exc.IntegrityError as exc:
             await logger.awarning(f"Error assigning orphaned flows to the superuser: {exc!s}")
+
+    if not skip_authorization_readiness:
+        from langflow.services.authorization.repository import invalid_team_ids
+        from langflow.services.deps import get_authorization_service
+
+        authorization_service = get_authorization_service()
+        authz_enabled = bool(await authorization_service.is_enabled())
+        team_roles = bool(await authorization_service.supports_team_roles())
+        sharing = bool(await authorization_service.supports_user_team_sharing())
+        readiness_probe = getattr(authorization_service, "collaboration_ready", None)
+        authorization_ready = (
+            bool(await readiness_probe()) if readiness_probe is not None else bool(authorization_service.ready)
+        )
+        async with session_scope() as session:
+            invalid_teams = await invalid_team_ids(session)
+        await logger.ainfo(
+            "Authorization service=%s enabled=%s ready=%s team_roles=%s sharing=%s invalid_teams=%d",
+            type(authorization_service).__name__,
+            authz_enabled,
+            authorization_ready,
+            team_roles,
+            sharing,
+            len(invalid_teams),
+        )
+        if authz_enabled and (not authorization_ready or not team_roles or not sharing):
+            msg = (
+                "Authorization is enabled but the native collaboration contract is not ready. "
+                "Run `langflow authz teams-check` and repair invalid teams before startup."
+            )
+            raise RuntimeError(msg)
 
     async with session_scope() as session:
         await clean_transactions(settings_service, session)

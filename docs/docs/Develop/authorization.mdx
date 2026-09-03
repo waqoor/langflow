@@ -3,36 +3,30 @@ title: Authorization
 slug: /authorization
 ---
 
-Langflow includes a pluggable authorization layer for role-based access control (RBAC) over flows, projects, deployments, files, variables, and knowledge bases.
+Langflow includes a replaceable authorization service for role-based access control (RBAC) over flows, projects, deployments, files, variables, and knowledge bases. Authentication proves who the caller is; authorization separately decides what that active identity may do.
 
-The authorization infrastructure is present in all Langflow deployments, but the open-source build registers a pass-through service that **always allows** every action for every authenticated user.
+The full Langflow application registers a native production evaluator. It reads the committed Langflow user, resource, role, team, membership, and share rows for every new admission. Those canonical rows are the single source of policy truth; the native evaluator does not require Redis or a second compiled-policy database for correctness. Provider-free `lfx` retains the service interface and pass-through default, and deployments can substitute an implementation through `lfx.toml`.
 
-Setting `LANGFLOW_AUTHZ_ENABLED=true` without an enforcement plugin **does not** restrict access. Route guards still run and audit rows can still be written, but no policy is applied.
+Authorization is default off. When `LANGFLOW_AUTHZ_ENABLED=false`, Langflow preserves its historical owner-scoped behavior. When it is `true`, the native evaluator fails closed for unknown actions, inactive identities, invalid teams, missing policy state, or service/database failures. Capability discovery also fails closed rather than enabling collaboration controls optimistically.
 
-Per-resource RBAC enforcement requires a registered authorization plugin.
-Langflow OSS **does not** include a registered authorization plugin.
+## Enable native authorization and collaboration
 
-## Enable RBAC with an enforcement plugin
+1. Back up the application database and record the backup identifier and current Alembic revision. Apply the normal migrations, including `bf6c22022777`.
+2. Disable auto-login (`LANGFLOW_AUTO_LOGIN=false`), configure a strong bootstrap superuser password and `LANGFLOW_SECRET_KEY`, and terminate TLS at a trusted HTTPS boundary. Distinct authenticated users are required to validate sharing.
+3. While application writes are stopped, run `langflow authz teams-check`. If it reports legacy empty or adminless teams, prepare an explicit JSON mapping and run `langflow authz teams-repair --mapping-file <path>`. The repair command never guesses or promotes an administrator.
+4. Set `LANGFLOW_AUTHZ_ENABLED=true`. For compliance-grade authorization logs, also set both `LANGFLOW_AUTHZ_AUDIT_ENABLED=true` and `LANGFLOW_AUTHZ_AUDIT_DURABLE=true`.
+5. Start Langflow and inspect its authorization readiness log. Call `GET /api/v1/authz/capabilities` as an authenticated user and require `enforcement_active`, `service_ready`, `team_roles_supported`, and `user_team_sharing_supported` to be `true` before exposing collaboration features.
+6. Create teams with an initial active Team Admin, then create user/team shares through the UI or [shares API](#shares-api).
 
-The following steps apply when you have a registered enforcement plugin.
-
-1. Set `LANGFLOW_AUTHZ_AUDIT_ENABLED=true` and run Langflow in a staging environment. Review the [audit log](#audit-log-api) to understand what decisions would be made before enforcement is on.
-
-2. Install and register the enforcement plugin following its setup guide.
-
-3. Set `LANGFLOW_AUTHZ_ENABLED=true`. The plugin reads the role and share tables and applies its policy.
-
-4. Use the [roles API](#roles-api) and [role assignments API](#role-assignments-api) to assign the built-in `viewer`, `developer`, or `admin` roles to your users, or create custom roles.
-
-5. Use the [shares API](#shares-api) to grant cross-user access where needed.
+If a replacement authorization service is registered, it must explicitly advertise team roles, user/team sharing, and conditional-write support. A missing or incomplete capability is unavailable, not permission to fall back to the native collaboration UI.
 
 ## Configure authorization environment variables
 
 | Variable | Description | Default |
 |---|---|---|
-| `LANGFLOW_AUTHZ_ENABLED` | Enable authorization enforcement. Requires a registered enforcement plugin. When `false`, all requests pass regardless of roles or shares. | `false` |
-| `LANGFLOW_AUTHZ_SUPERUSER_BYPASS` | When `true`, active superusers bypass authorization checks. The plugin may still audit the decision. | `true` |
-| `LANGFLOW_AUTHZ_AUDIT_ENABLED` | Write an audit log row for every authorization decision and share-administration action. Works independently of `LANGFLOW_AUTHZ_ENABLED` — set this to `true` while enforcement is off to observe traffic before enabling enforcement. | `false` |
+| `LANGFLOW_AUTHZ_ENABLED` | Enable enforcement through the registered authorization service. Full Langflow supplies the native canonical-table evaluator. | `false` |
+| `LANGFLOW_AUTHZ_SUPERUSER_BYPASS` | Let an active superuser bypass resource checks, subject to any narrower external credential ceiling. It never turns a Team Admin into a Platform Admin. | `true` |
+| `LANGFLOW_AUTHZ_AUDIT_ENABLED` | Write decision and share-administration audit rows. This is independent of enforcement and is best effort unless durable mode is enabled. | `false` |
 | `LANGFLOW_AUTHZ_AUDIT_DURABLE` | Wait for each accepted audit row to commit. A full bounded queue applies backpressure and persistence failures fail the triggering request with a sanitized error. Enable this before treating the audit table as a compliance or external-delivery source. | `false` |
 | `LANGFLOW_AUTHZ_AUDIT_RETENTION_DAYS` | Number of days to retain audit log rows. Set to `0` to disable automatic pruning. | `90` |
 | `LANGFLOW_AUTHZ_AUDIT_CLEANUP_INTERVAL` | Seconds between retention sweep runs. A sweep also runs on startup. Minimum `300`. | `86400` |
@@ -46,21 +40,46 @@ failure class names; database exception text is never exposed.
 
 ## System roles
 
-Langflow seeds three built-in system roles that an enforcement plugin uses as a starting point for policy sync. These roles cannot be deleted.
+Langflow seeds three built-in system roles. The native service evaluates their permission slugs directly. These roles cannot be deleted.
 
 | Role | Permission slugs |
 |---|---|
-| `viewer` | `flow:read`, `project:read`, `deployment:read`, `file:read`, `variable:read`, `knowledge_base:read` |
-| `developer` | `viewer` permissions plus `flow:write`, `flow:execute`, `file:write`, `variable:write` |
-| `admin` | All actions on all resource types |
+| `viewer` | `flow:read`, **`flow:execute`**, and read access to deployments, projects, knowledge bases, variables, and files |
+| `developer` | Viewer permissions plus flow write/create; deployment write/create/execute; project write/create; and knowledge-base, variable, and file write/create (including knowledge-base ingest) |
+| `admin` | Developer permissions plus resource delete, flow deploy, and share read/create/update/delete |
 
-You can create additional roles with the [roles API](#roles-api). Role assignments take effect only after an enforcement plugin is registered.
+You can create additional roles with the [roles API](#roles-api). A role assignment applies only in its canonical global, workspace, or project domain.
+
+## Team roles and resource-sharing permissions
+
+Team roles govern one team's administration only. They never grant flow/project access by themselves and never elevate a user to Platform Admin.
+
+| Operation | Platform Admin | Team Admin | Team Maintainer | Team User |
+|---|---:|---:|---:|---:|
+| Create/delete/list all teams or change active/directory state | Yes | No | No | No |
+| View own team and roster | Yes | Yes | Yes | Yes |
+| Edit own team name/description | Yes | Yes | No | No |
+| Add/remove ordinary Team Users | Yes | Yes | Yes | No |
+| Assign or modify Admin/Maintainer roles | Yes | Yes | No | No |
+
+Every committed team has at least one member, and every active team has at least one active Admin. Final-roster validation and database locks prevent concurrent removals/demotions from committing an invalid result. A manually managed endpoint cannot remove a source-managed membership.
+
+For flow and project sharing, the UI offers exactly two modes:
+
+- **Can use** stores `permission_level="execute"`: read the resource and execute the saved flow. On a project, this means project read plus read/execute for directly contained flows.
+- **Can edit** stores `permission_level="write"`: Can use plus content editing. On a project, it also permits project name/description edits and creation of creator-owned flows directly inside that project.
+
+The reusable API also preserves `read` and `admin`. `read` does not imply execution. `admin` includes the resource's delete action in the generic permission map, but ownership and operation-specific route protections still control deletion, moves, publication, transport authentication, ownership changes, and share administration. The dialog never silently converts an existing `read` or `admin` row.
+
+Permissions are additive: ownership, applicable scoped roles, direct shares, active-team shares, and project inheritance are combined, then narrowed by credential ceilings and operation-specific protections. Therefore, deleting one share may leave access through another source. `GET /api/v1/authz/shares/summary` reports bounded effective actions and their sources.
+
+Project inheritance is dynamic and covers directly contained flows without creating a share row per child. A new child inherits immediately; a moved child uses its new parent. A direct flow share does not disclose a private parent or sibling. A collaborator who creates a flow in an editable shared project remains that flow's owner even after team membership or the project grant is removed.
 
 ## Authorization API reference
 
-All authorization endpoints are under `/api/v1/authz/`. Write operations require superuser privileges.
+All authorization endpoints are under `/api/v1/authz/`. Platform-only operations require an active superuser with an applicable credential ceiling. Team and share routes instead enforce their exact team/resource scope.
 
-These endpoints manage the RBAC data model. An enforcement plugin consumes roles, assignments, and shares when evaluating requests. Without a plugin, API responses succeed but access is not restricted.
+Private foreign resources generally return `404` after authentication to avoid confirming their existence. New domain failures use a structured `detail` object containing a stable `code` and safe `message`. Invalid payloads return `422`; known-but-forbidden team operations return `403`; duplicate or invariant-conflicting writes return `409`; unavailable collaboration policy returns `503 AUTHORIZATION_NOT_READY`.
 
 ## Shared-flow execution identity
 
@@ -68,7 +87,7 @@ A share delegates an action on a resource; it does not delegate the owner's iden
 
 For an authenticated shared-flow run, the authenticated caller is the execution principal. Variables, files, nested flows, messages, jobs, and other dependencies resolve in that caller's namespace. A dependency must therefore be owned by the caller or shared with the caller separately. Langflow never falls back to the flow owner's credentials when a caller-owned or explicitly shared dependency is unavailable.
 
-Only the flow owner can submit graph data or component-parameter tweaks. A non-owner receives the same not-found response as a caller without access so the rejection does not confirm that the flow exists.
+Caller-controlled graph substitution is never implied by execute access. Interactive chat and the V2 workflow path allow stored-flow overrides for the owner or a caller with `flow:write`; the V1 advanced run API remains owner-only for tweaks. Execute-only callers and public callers cannot submit graph data or tweaks. A rejected non-owner override uses the same not-found response as a missing flow so it does not confirm that the flow exists.
 
 Revoking a share prevents new runs and rechecked continuations, including HITL resume. It does not change the principal of work that is already running or terminate that work. Deployments and legacy public entry points are explicit exceptions:
 
@@ -88,7 +107,7 @@ The machine-validated endpoint-family contract is maintained in `scripts/ci/exec
 
 `POST /api/v1/authz/me/permissions`
 
-Returns the allowed actions for a set of resources for the current user, without making individual resource requests that would trigger 403 responses. The frontend uses this to enable or disable UI controls when an enforcement plugin is active.
+Returns the allowed actions for a set of resources for the current user, without making individual resource requests that would trigger 403 responses. The frontend uses this to enable or disable controls when enforcement is active.
 
 **Request body:**
 
@@ -110,21 +129,40 @@ Returns the allowed actions for a set of resources for the current user, without
 }
 ```
 
+Unknown or unavailable capability state must disable controls. The backend remains authoritative when the UI is stale.
+
+### Collaboration capabilities
+
+`GET /api/v1/authz/capabilities`
+
+Returns non-secret deployment and caller capabilities: whether enforcement and the registered service are ready, whether team roles and user/team sharing are supported, the two UI share modes, whether conditional writes are required, and whether this caller can administer the platform or create a team. A readiness failure returns `503 AUTHORIZATION_NOT_READY`.
+
+### Recipient lookup
+
+`GET /api/v1/authz/recipients`
+
+Recipient lookup is bounded and authorized for an explicit `purpose` (`share` or `team_membership`) and `kind` (`user` or `team`). Queries must contain at least two characters and return only IDs, kind, display name, and optional avatar for active eligible records. Share searches require `resource_type=flow|project` and `resource_id`; team-member searches require Platform Admin authority or a visible `team_id` plus the capability to add members. Authorization happens before directory search so the endpoint cannot be used as an unauthenticated or cross-team directory.
+
 ### Shares API
 
 `/api/v1/authz/shares`
 
-Shares grant access to a resource across user boundaries. The resource owner or a superuser can administer shares for their own resources.
+Shares grant access across user boundaries. The resource owner, an applicable scoped role with share authority, or a permitted Platform Admin can administer a resource's shares. Flow/project editors cannot reshare merely because they can edit content.
 
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/v1/authz/shares` | Create a share |
 | `GET` | `/api/v1/authz/shares` | List shares visible to the current user |
+| `GET` | `/api/v1/authz/shares/summary` | Explain direct grants and effective access for one flow/project and subject user |
 | `GET` | `/api/v1/authz/shares/{share_id}` | Get a specific share |
 | `PATCH` | `/api/v1/authz/shares/{share_id}` | Update a share |
 | `DELETE` | `/api/v1/authz/shares/{share_id}` | Delete a share |
 
-Each share write fires an invalidation call to the authorization plugin so cached policy is refreshed.
+Targeted `user` and `team` scopes require an active existing recipient. Duplicate creates return `409`; they never act as implicit permission escalation. Public flow restrictions remain separate from the user/team dialog.
+
+Individual reads return `ETag: "share:<uuid>:<revision>"`. When the registered service requires conditional writes, `PATCH` and `DELETE` require that value in `If-Match`. A missing header returns `428 PRECONDITION_REQUIRED`; a stale value returns `412 SHARE_CHANGED`. Refetch and ask the user to reconcile the current grant—do not retry a stale permission update automatically. A changed update increments `revision`; an authorized no-op keeps it unchanged.
+
+Every share mutation writes its canonical mutation audit in the same transaction. Post-commit invalidation is advisory for replacement-service caches; the native service reads committed policy on every new admission, so correctness does not depend on invalidation delivery.
 
 ### Roles API
 
@@ -150,20 +188,45 @@ Each share write fires an invalidation call to the authorization plugin so cache
 
 ### Teams API
 
-`/api/v1/authz/teams` — superuser only for writes
+`/api/v1/authz/teams`
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/v1/authz/teams` | List teams |
-| `GET` | `/api/v1/authz/teams/{team_id}` | Get a specific team |
-| `POST` | `/api/v1/authz/teams` | Create a team |
-| `PATCH` | `/api/v1/authz/teams/{team_id}` | Update a team |
-| `DELETE` | `/api/v1/authz/teams/{team_id}` | Delete a team |
-| `GET` | `/api/v1/authz/teams/{team_id}/members` | List team members |
-| `POST` | `/api/v1/authz/teams/{team_id}/members` | Add a member to a team |
-| `DELETE` | `/api/v1/authz/teams/{team_id}/members/{user_id}` | Remove a member from a team |
+| `GET` | `/api/v1/authz/teams` | List all teams for Platform Admins or the caller's visible teams |
+| `GET` | `/api/v1/authz/teams/{team_id}` | Get a visible team and caller-specific capabilities |
+| `POST` | `/api/v1/authz/teams` | Platform Admin: atomically create a team and valid initial roster |
+| `PATCH` | `/api/v1/authz/teams/{team_id}` | Atomically update permitted metadata and roster operations |
+| `DELETE` | `/api/v1/authz/teams/{team_id}` | Platform Admin: delete a team and its team-targeted grants, not resources |
+| `GET` | `/api/v1/authz/teams/{team_id}/members` | List a visible team's roster |
+| `POST` | `/api/v1/authz/teams/{team_id}/members` | Add a manually managed member within the role matrix |
+| `PATCH` | `/api/v1/authz/teams/{team_id}/members/{user_id}` | Change a member's local team role within the role matrix |
+| `DELETE` | `/api/v1/authz/teams/{team_id}/members/{user_id}` | Remove a manually managed member within the role matrix |
 
-### Audit log API
+The create payload must include at least one active `admin`. Team `PATCH` applies `member_upserts` and `remove_member_ids` as one final roster, allowing an Admin replacement without committing an invalid intermediate state. `TeamRead.capabilities` is the server-derived authority for UI controls.
+
+## Conditional flow and project writes
+
+Flow and project reads return strong ETags based on `edit_revision`. When native collaboration is enabled, mutations require the observed ETag through `If-Match`; stable-ID creates require `If-None-Match: *`. Missing preconditions return `428 PRECONDITION_REQUIRED` and stale resources return `412 RESOURCE_CHANGED`. The UI must stop auto-save, refetch, and let the user reconcile changes instead of overwriting another editor's work or retrying automatically. Supplying a condition is honored even when the service does not require the native contract.
+
+An editable share permits content changes only. Owners retain owner-managed fields, publication/authentication settings, moving and deletion. A shared-project editor can create a child flow, but the authenticated creator remains that flow's owner. Project deletion validates every affected child and deployment before deleting anything.
+
+## Revocation and operational recovery
+
+A committed share deletion, team removal/deactivation, role change, or user deactivation controls the next admission on every worker because the native evaluator rereads canonical state. Rechecked HITL resumes also require current access. This does not cancel work already admitted before the commit or change its execution principal.
+
+Removing one grant may leave effective access from ownership, a role, another team, a direct share, or project inheritance. Refresh the share summary before telling a user that access is gone. Removing a creator from a team is not an ownership transfer; their existing resources remain creator-owned. Sharing a flow also never supplies the owner's variables, files, provider credentials, nested-flow access, or other dependencies—the execution principal needs its own or separately shared dependencies.
+
+For legacy team repair and recovery:
+
+1. Stop application writes and take a tested database backup.
+2. Run `langflow authz teams-check`.
+3. For each reported team, explicitly choose an already active member as Admin in a mapping file, or retire an empty team. Then run `langflow authz teams-repair --mapping-file <path>` and rerun the check.
+4. Start the candidate and require the capabilities endpoint to report ready. Inactive or retired teams contribute no resource grants.
+5. If upgrade validation fails, restore the known backup and the matching pre-upgrade application version. Downgrading drops role/revision/inactivation metadata and is not a lossless authorization recovery procedure.
+
+The migration does not invent an Admin because the correct human cannot be inferred. The mapping file has the form `{"teams":[{"team_id":"<uuid>","admin_user_id":"<active-member-uuid>"}]}` or, for an empty team, a `teams` entry with `{"team_id":"<uuid>","retire":true}`. Tests and repair commands are operator actions; they are not added to startup, migrations, or deployment entrypoints.
+
+## Audit log API
 
 `GET /api/v1/authz/audit` — superuser only
 

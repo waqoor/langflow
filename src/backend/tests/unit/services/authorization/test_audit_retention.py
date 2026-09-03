@@ -108,8 +108,8 @@ class _RecordingLogger:
 
 
 @pytest.mark.anyio
-async def test_passthrough_warning_emitted_when_authz_enabled(monkeypatch):
-    """LangflowAuthorizationService warns when AUTHZ_ENABLED=True but plugin is missing."""
+async def test_native_service_does_not_report_pass_through_when_authz_enabled(monkeypatch):
+    """The fork's enabled service is a native enforcer, never an OSS allow-all stub."""
     from langflow.services.authorization import service as authz_service_module
 
     recorder = _RecordingLogger()
@@ -124,9 +124,9 @@ async def test_passthrough_warning_emitted_when_authz_enabled(monkeypatch):
     LangflowAuthorizationService(settings)
 
     warning_messages = [msg for level, msg in recorder.calls if level == "warning"]
-    assert any("OSS pass-through" in msg for msg in warning_messages), (
-        f"Expected a WARNING about the OSS pass-through service; got {warning_messages}"
-    )
+    debug_messages = [msg for level, msg in recorder.calls if level == "debug"]
+    assert not any("pass-through" in msg.lower() for msg in warning_messages)
+    assert any("Native Langflow authorization service initialized" in msg for msg in debug_messages)
 
 
 @pytest.mark.anyio

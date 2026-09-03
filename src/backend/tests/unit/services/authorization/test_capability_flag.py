@@ -103,11 +103,14 @@ def test_share_rule_snapshot_is_framework_neutral_and_immutable():
 
 
 @pytest.mark.anyio
-async def test_langflow_pass_through_does_not_support_cross_user_fetch():
-    """OSS pass-through must NOT opt in — that is the strict-pass-through contract."""
+async def test_langflow_native_service_supports_cross_user_fetch_contract():
+    """The enhanced native service resolves foreign rows before enforcing policy."""
     service = LangflowAuthorizationService(_settings())
-    assert await service.supports_cross_user_fetch() is False
+    assert await service.supports_cross_user_fetch() is True
     assert await service.supports_api_key_scopes() is False
+    assert await service.supports_team_roles() is True
+    assert await service.supports_user_team_sharing() is True
+    assert await service.supports_conditional_writes() is True
 
 
 @pytest.mark.anyio

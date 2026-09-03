@@ -26,7 +26,13 @@ from langflow.api.utils import (
     build_content_disposition,
     normalize_flow_for_export,
     remove_api_keys,
+    restore_redacted_secret_values,
     strip_flow_secrets,
+    strip_secret_field_values,
+)
+from langflow.services.authorization.concurrency import (
+    RevisionPreconditionError,
+    require_revision_precondition,
 )
 from langflow.services.authorization.fetch import authorized_or_owner_scoped
 from langflow.services.database.models.base import orjson_dumps
@@ -151,6 +157,75 @@ _UPDATABLE_FLOW_FIELDS: frozenset[str] = frozenset(
         "fs_path",
     }
 )
+
+_OWNER_MANAGED_FLOW_FIELDS = frozenset(
+    {
+        "id",
+        "user_id",
+        "folder_id",
+        "workspace_id",
+        "fs_path",
+        "access_type",
+        "mcp_enabled",
+        "a2a_enabled",
+        "a2a_card_overrides",
+        "endpoint_name",
+        "action_name",
+        "action_description",
+        "flow_type",
+        "is_component",
+        "locked",
+    }
+)
+
+
+def _flow_revision_snapshot(flow: Flow) -> dict[str, Any]:
+    """Capture persisted state whose effective change advances edit_revision."""
+    return flow.model_dump(exclude={"updated_at", "edit_revision"})
+
+
+def flow_read_for_actor(
+    flow: Flow,
+    actor_id: UUID,
+    *,
+    owner_username: str | None = None,
+) -> FlowRead:
+    """Serialize a flow while withholding owner secrets from collaborators."""
+    result = FlowRead.model_validate(
+        flow,
+        from_attributes=True,
+        update={
+            "owner_username": owner_username,
+            "is_owner": flow.user_id == actor_id,
+        },
+    )
+    if flow.user_id != actor_id:
+        result.data = strip_secret_field_values(result.data)
+    return result
+
+
+def _ensure_shared_editor_fields_allowed(db_flow: Flow, update_data: dict[str, Any], *, is_owner: bool) -> None:
+    """Permit content edits while protecting ownership/publication state."""
+    if is_owner:
+        return
+    changed_protected = {
+        field
+        for field in _OWNER_MANAGED_FLOW_FIELDS
+        if field in update_data and update_data[field] != getattr(db_flow, field, None)
+    }
+    if changed_protected:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the workflow owner may change ownership, scope, lock, or publication settings.",
+        )
+    if "data" in update_data:
+        current_webhook = get_webhook_component_in_flow(db_flow.data or {}) is not None
+        proposed_webhook = get_webhook_component_in_flow(update_data["data"] or {}) is not None
+        if current_webhook != proposed_webhook:
+            raise HTTPException(
+                status_code=403,
+                detail="Only the workflow owner may change webhook publication eligibility.",
+            )
 
 
 def _apply_update_data(target: Flow, update_data: dict[str, Any]) -> None:
@@ -515,6 +590,9 @@ async def _update_existing_flow(
     flow: FlowCreate,
     current_user: User,
     storage_service: StorageService,
+    if_match: str | None = None,
+    precondition_required: bool = False,
+    widen_for_authz: bool = False,
 ) -> FlowRead:
     """Update an existing flow (PUT update path).
 
@@ -531,17 +609,33 @@ async def _update_existing_flow(
     ``_patch_flow``.
     """
     await lock_flow_for_update(session, existing_flow)
+    try:
+        require_revision_precondition(
+            resource_type="flow",
+            resource_id=existing_flow.id,
+            current_revision=existing_flow.edit_revision,
+            if_match=if_match,
+            required=precondition_required,
+            changed_code="RESOURCE_CHANGED",
+        )
+    except RevisionPreconditionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    revision_snapshot = _flow_revision_snapshot(existing_flow)
 
     settings_service = get_settings_service()
     actor_user_id = current_user.id
     owner_user_id: UUID = existing_flow.user_id
     is_owner_edit = owner_user_id == actor_user_id
+    can_manage_owner_fields = is_owner_edit or current_user.is_superuser is True
     existing_folder_id = existing_flow.folder_id
+
+    if flow.user_id is not None and flow.user_id != owner_user_id:
+        raise HTTPException(status_code=403, detail="Workflow ownership transfer is not supported.")
 
     # Non-owner edits cannot relocate the flow into folders or storage they
     # own, nor transfer ownership. Reject early so the failure is explicit
     # rather than corrupting scope downstream.
-    if not is_owner_edit:
+    if not can_manage_owner_fields:
         if flow.folder_id is not None and flow.folder_id != existing_flow.folder_id:
             raise HTTPException(
                 status_code=403,
@@ -551,11 +645,6 @@ async def _update_existing_flow(
             raise HTTPException(
                 status_code=403,
                 detail="Cannot change fs_path of a flow you do not own.",
-            )
-        if flow.user_id is not None and flow.user_id != owner_user_id:
-            raise HTTPException(
-                status_code=403,
-                detail="Cannot transfer ownership of a flow you do not own.",
             )
         # ``a2a_enabled`` defaults to False (not None) on FlowCreate, so gate on
         # model_fields_set to block only an explicit, differing change.
@@ -586,6 +675,7 @@ async def _update_existing_flow(
             session,
             owner_user_id,
             flow.folder_id,
+            widen_for_authz=widen_for_authz,
             authorized_existing_folder_id=existing_folder_id,
         )
         if not folder:
@@ -624,9 +714,14 @@ async def _update_existing_flow(
     # None-valued inputs are treated as omitted by default for updates.
     update_data = flow.model_dump(exclude_unset=True, exclude_none=True)
 
+    if not is_owner_edit and "data" in update_data:
+        update_data["data"] = restore_redacted_secret_values(update_data["data"], existing_flow.data)
+
     # Preserve the existing endpoint unless the request explicitly clears it.
     if _endpoint_name_was_explicitly_cleared(flow):
         update_data["endpoint_name"] = None
+
+    _ensure_shared_editor_fields_allowed(existing_flow, update_data, is_owner=can_manage_owner_fields)
 
     # Remove id and user_id from update data (security)
     update_data.pop("id", None)
@@ -653,13 +748,18 @@ async def _update_existing_flow(
         session,
         existing_flow,
         owner_user_id,
+        widen_for_authz=widen_for_authz,
         authorized_existing_folder_id=existing_folder_id,
     )
 
     webhook_component = get_webhook_component_in_flow(existing_flow.data or {})
     existing_flow.webhook = webhook_component is not None
-    existing_flow.updated_at = datetime.now(timezone.utc)
 
+    if _flow_revision_snapshot(existing_flow) == revision_snapshot:
+        return FlowRead.model_validate(existing_flow, from_attributes=True)
+
+    existing_flow.edit_revision += 1
+    existing_flow.updated_at = datetime.now(timezone.utc)
     session.add(existing_flow)
     await session.flush()
     await session.refresh(existing_flow)
@@ -676,6 +776,10 @@ async def _patch_flow(
     flow: FlowUpdate,
     user_id: UUID,
     storage_service: StorageService,
+    if_match: str | None = None,
+    precondition_required: bool = False,
+    widen_for_authz: bool = False,
+    actor_is_platform_admin: bool = False,
 ) -> FlowRead:
     """Apply a partial update (PATCH) to an existing flow and return a FlowRead.
 
@@ -686,28 +790,48 @@ async def _patch_flow(
     fs namespace; the actor cannot change ownership-bound state at all.
     """
     await lock_flow_for_update(session, db_flow)
+    try:
+        require_revision_precondition(
+            resource_type="flow",
+            resource_id=db_flow.id,
+            current_revision=db_flow.edit_revision,
+            if_match=if_match,
+            required=precondition_required,
+            changed_code="RESOURCE_CHANGED",
+        )
+    except RevisionPreconditionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    revision_snapshot = _flow_revision_snapshot(db_flow)
 
     settings_service = get_settings_service()
 
     owner_user_id: UUID = db_flow.user_id
     is_owner_edit = owner_user_id == user_id
+    can_manage_owner_fields = is_owner_edit or actor_is_platform_admin
     existing_folder_id = db_flow.folder_id
 
     # PATCH follows the same rule: None-valued fields are omitted unless
     # explicitly reintroduced below (for example endpoint_name clear).
     update_data = flow.model_dump(exclude_unset=True, exclude_none=True)
 
+    if "user_id" in update_data and update_data["user_id"] != owner_user_id:
+        raise HTTPException(status_code=403, detail="Workflow ownership transfer is not supported.")
+
+    if not is_owner_edit and "data" in update_data:
+        update_data["data"] = restore_redacted_secret_values(update_data["data"], db_flow.data)
+
     # Preserve the existing endpoint unless the request explicitly clears it.
     if _endpoint_name_was_explicitly_cleared(flow):
         update_data["endpoint_name"] = None
 
     _ensure_api_flow_update_allowed(db_flow, update_data)
+    _ensure_shared_editor_fields_allowed(db_flow, update_data, is_owner=can_manage_owner_fields)
 
     # A non-owner editing a shared flow must not be able to relocate the
     # flow into folders or storage they own. Reject ownership-bound mutations
     # explicitly so the failure surfaces in the response instead of silently
     # corrupting scope inside ``_validate_and_assign_folder``.
-    if not is_owner_edit:
+    if not can_manage_owner_fields:
         if "folder_id" in update_data and update_data["folder_id"] != db_flow.folder_id:
             raise HTTPException(
                 status_code=403,
@@ -760,7 +884,6 @@ async def _patch_flow(
 
     webhook_component = get_webhook_component_in_flow(db_flow.data) if db_flow.data else None
     db_flow.webhook = webhook_component is not None
-    db_flow.updated_at = datetime.now(timezone.utc)
 
     # Folder validation must be scoped to the owner — otherwise a non-owner
     # edit would land in the actor's default folder (see ``_validate_and_assign_folder``).
@@ -768,9 +891,15 @@ async def _patch_flow(
         session,
         db_flow,
         owner_user_id,
+        widen_for_authz=widen_for_authz,
         authorized_existing_folder_id=existing_folder_id,
     )
 
+    if _flow_revision_snapshot(db_flow) == revision_snapshot:
+        return FlowRead.model_validate(db_flow, from_attributes=True)
+
+    db_flow.edit_revision += 1
+    db_flow.updated_at = datetime.now(timezone.utc)
     session.add(db_flow)
     await session.flush()
     await session.refresh(db_flow)

@@ -1115,7 +1115,14 @@ async def list_deployment_configs(
         )
 
     if deployment_row is None:
-        await ensure_deployment_permission(current_user, DeploymentAction.READ)
+        # The provider account was resolved through the owner-scoped helper
+        # above. Preserve that canonical owner context for native authz rather
+        # than evaluating an unqualified ``deployment:*`` wildcard.
+        await ensure_deployment_permission(
+            current_user,
+            DeploymentAction.READ,
+            deployment_user_id=provider_account.user_id,
+        )
 
     deployment_adapter = resolve_deployment_adapter(provider_account.provider_key)
     deployment_mapper = get_deployment_mapper(provider_account.provider_key)

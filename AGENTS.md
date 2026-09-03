@@ -106,10 +106,15 @@ Backend services in `src/backend/base/langflow/services/`:
 
 Authorization is a pluggable layer separate from authentication:
 
-- **OSS** ships the interface (`BaseAuthorizationService` in `lfx`) + a pass-through implementation (`LangflowAuthorizationService`) + the `authz_*` and `casbin_rule` DB schema + route guards.
-- Implementations register via the `lfx.services` entry point `authorization_service` in `lfx.toml` (same pattern as the SSO `auth_service`). A registered plugin reads the `authz_*` admin tables and writes compiled rules to `casbin_rule`.
+- `lfx` owns `BaseAuthorizationService` and its provider-free, pass-through default.
+- The full Langflow application registers `LangflowAuthorizationService`, a native evaluator that reads committed `authz_*`, user, and resource rows. It is the single production policy path for built-in teams and sharing; it does not maintain a shadow policy database or require Redis for correctness.
+- A deployment can replace that service through the `authorization_service` entry in `lfx.toml`. A replacement must advertise the collaboration capabilities it actually implements; the frontend fails closed when the service is unavailable or incomplete.
 
-Default is **off**: `LANGFLOW_AUTHZ_ENABLED=false`. When enabled with only the OSS stub registered, every check returns allow — the stub is a no-op so routes stay wired and audit rows still flow. Real allow/deny requires a registered authorization plugin.
+Enforcement is default **off** through `LANGFLOW_AUTHZ_ENABLED=false`, preserving historical owner-scoped behavior. With the native Langflow service and the flag enabled, unknown actions, missing policy data, inactive identities, and service failures deny rather than degrading to pass-through behavior.
+
+Team-management roles are distinct from resource permissions: `admin`, `maintainer`, and `user` apply only to one team's roster and settings. Platform authority remains an active `User.is_superuser`, subject to the configured bypass and credential ceiling. Resource access comes from ownership, scoped roles, user/team shares, and direct-project inheritance.
+
+The sharing dialog exposes only **Can use** (`execute`) and **Can edit** (`write`) for flow/project user or team grants. The low-level API retains `read`, `execute`, `write`, and `admin`; do not collapse or silently promote those values. An editable grant does not confer ownership, deletion, moving, publishing, or resharing authority.
 
 Route guards live in `langflow.services.authorization.guards` (the legacy `langflow.services.authorization.utils` path re-exports them for backward compatibility):
 - `ensure_flow_permission(user, FlowAction.*, flow_id=..., flow_user_id=..., workspace_id=..., folder_id=...)` — single-flow CRUD + execute
@@ -127,13 +132,17 @@ The enforcement request shape is `(subject, domain, object, action)`:
 - object = `flow:{uuid}` / `deployment:{uuid}` / `project:{uuid}` / `flow:*` / etc.
 - action = `read` / `write` / `create` / `delete` / `execute` / `deploy`
 
-**Share-aware fetch (Phase 3):** route fetch helpers (`_read_flow`, `get_flow_by_id_or_endpoint_name`, `get_deployment`, project reads in `projects.py`, v2 file fetcher, variable PATCH/DELETE in `variable.py`) branch on `BaseAuthorizationService.supports_cross_user_fetch()`. The OSS pass-through reports `False` so the existing owner-scoped queries are preserved — enabling `LANGFLOW_AUTHZ_ENABLED=true` without a registered plugin cannot widen visibility. Plugins set `SUPPORTS_CROSS_USER_FETCH=True` so resources load by id alone and `ensure_*_permission` decides access; route handlers can convert a plugin-deny `HTTPException(403)` to `HTTPException(404)` via `langflow.services.authorization.fetch.deny_to_404` to preserve UUID privacy.
+**Share-aware fetch:** route fetch helpers (`_read_flow`, `get_flow_by_id_or_endpoint_name`, `get_deployment`, project reads in `projects.py`, v2 file fetcher, variable PATCH/DELETE in `variable.py`) branch on `BaseAuthorizationService.supports_cross_user_fetch()`. The native service returns exact database-prefiltered visibility IDs and lets `ensure_*_permission` decide direct access. A substituted service that declines this capability retains owner-scoped queries. Route handlers can convert a deny to `404` with `langflow.services.authorization.fetch.deny_to_404` to preserve UUID privacy.
 
-**Share CRUD API (Phase 3):** `/api/v1/authz/shares` provides POST / GET / PATCH / DELETE on `authz_share` rows. The handler enforces an OSS floor (resource owner or superuser may administer shares for that resource) so the OSS pass-through cannot let a non-owner mint share rows. Each write fires `BaseAuthorizationService.invalidate_user` / `invalidate_all` so a registered enforcer can drop cached policy. Audit rows are written via `audit_decision` with `share:create` / `share:update` / `share:delete` actions.
+**Share CRUD API:** `/api/v1/authz/shares` provides POST / GET / PATCH / DELETE plus the resource-scoped `/summary` view. Mutations resolve the stored resource, enforce resource-specific share administration, validate active recipients, and commit the share plus mutation audit atomically. Enabled services advertising conditional writes require the observed strong ETag through `If-Match` for share updates/deletes and flow/project mutations; missing/stale preconditions return `428`/`412`. Never retry a stale edit automatically.
+
+**Collaboration discovery:** `/api/v1/authz/capabilities` reports enforcement/readiness/team/sharing/conditional-write support without secrets. `/api/v1/authz/recipients` performs bounded, purpose-specific user/team search only after the caller is authorized for the intended resource or team operation. `/api/v1/authz/me/permissions` is the fail-closed UI capability source.
 
 **Audit query API (Phase 4):** `GET /api/v1/authz/audit` (superuser-only) exposes a paginated, filterable view of `authz_audit_log`. Supports `user_id`, `resource_type`, `resource_id`, `action`, `result`, `since`, `until` filters; page size capped at 200.
 
-**Default role catalog (Phase 4):** the consolidated foundations migration `7c8d9e0f1a2b_authz_foundations` seeds the three built-in `is_system=True` roles (viewer / developer / admin) with `"{resource}:{action}"` permission slugs. OSS does not interpret these — they exist so a registered plugin's policy sync has a stable bootstrap source.
+**Default role catalog:** the foundations migration `7c8d9e0f1a2b_authz_foundations` seeds the three built-in `is_system=True` roles (viewer / developer / admin) with `"{resource}:{action}"` permission slugs. The native service evaluates them directly; a replacement service may consume the same canonical catalog.
+
+**Required authorization CI:** backend acceptance is the `Run Team Sharing Backend Tests` SQLite/PostgreSQL 16 and Python 3.10/3.14 matrix. Browser acceptance is `Run Team Sharing E2E`, which sets `LANGFLOW_E2E_AUTHZ=true`, selects `tests/core/features/authz`, requires all eight `J1`-`J8` `@authz` journeys, uses distinct users, one worker, and zero retries. Normal Playwright mode excludes only that separately owned directory. Both jobs are mandatory in `CI Success` whenever `authz-sharing` paths or `run-all-tests` select them.
 
 ## Component Development
 

@@ -5,7 +5,10 @@ import PaginatorComponent from "@/components/common/paginatorComponent";
 import CardsWrapComponent from "@/components/core/cardsWrapComponent";
 import { useStartNewFlow } from "@/components/core/flowBuilderWelcome/hooks/use-start-new-flow";
 import { IS_MAC } from "@/constants/constants";
-import { PermissionsProvider } from "@/contexts/permissionsContext";
+import {
+  PermissionsProvider,
+  useResourceCapability,
+} from "@/contexts/permissionsContext";
 import { useGetFolderQuery } from "@/controllers/API/queries/folders/use-get-folder";
 import { CustomBanner } from "@/customization/components/custom-banner";
 import { CustomMcpServerTab } from "@/customization/components/custom-McpServerTab";
@@ -89,6 +92,16 @@ const HomePage = ({ type }: { type: "flows" | "components" | "mcp" }) => {
   // The page loads from `folderId ?? myCollectionId` (the default-collection
   // route omits the id), so permission checks must scope to the same project.
   const permissionsFolderId = folderId ?? myCollectionId;
+  const projectCreation = useResourceCapability(
+    "project",
+    permissionsFolderId,
+    "can_create_flow",
+  );
+  // With no project yet, the ordinary personal-project creation path remains
+  // available; once a target exists its server-derived capability is final.
+  const canCreateFlow = permissionsFolderId
+    ? projectCreation.allowed && !projectCreation.isUnavailable
+    : true;
 
   const { data: folderData, isLoading } = useGetFolderQuery({
     id: folderId ?? myCollectionId,
@@ -298,7 +311,9 @@ const HomePage = ({ type }: { type: "flows" | "components" | "mcp" }) => {
 
   return (
     <CardsWrapComponent
-      onFileDrop={flowType === "mcp" ? undefined : handleFileDrop}
+      onFileDrop={
+        flowType === "mcp" || !canCreateFlow ? undefined : handleFileDrop
+      }
       dragMessage={
         isEmptyFolder
           ? t("home.dragFlowsOrComponents")
@@ -333,11 +348,13 @@ const HomePage = ({ type }: { type: "flows" | "components" | "mcp" }) => {
                   setSearch={onSearch}
                   isEmptyFolder={isEmptyFolder === true}
                   selectedFlows={selectedFlows}
+                  canCreateFlow={canCreateFlow}
                 />
                 {isEmptyFolder === true ? (
                   <EmptyFolder
                     setOpenModal={setNewProjectModal}
                     onNewFlow={startNewFlow}
+                    canCreateFlow={canCreateFlow}
                   />
                 ) : (
                   <div className="flex h-full flex-col">

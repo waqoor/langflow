@@ -498,11 +498,14 @@ async def _ensure_typed(
         extra_context[spec.id_kw] = resource_id
     for key in spec.extra_context_kws:
         extra_context[key] = kwargs.get(key)
+    extra_context["resource_type"] = spec.resource_type
+    extra_context["resource_id"] = resource_id
 
     # On CREATE the resource does not exist yet, so ownership can only come
     # from the container it is created in. Everything else authorizes against
     # the resource's own owner.
     is_create = act_str == "create"
+    extra_context["intrinsic_creation"] = is_create and resource_id is None
     container_owner_id = kwargs.get(spec.create_container_owner_kw) if spec.create_container_owner_kw else None
     if is_create and spec.create_container_owner_kw is not None:
         override_owner_id = container_owner_id
@@ -606,7 +609,7 @@ async def ensure_flows_permission(
         return
 
     act_str = _coerce_action(act)
-    user_id = getattr(user, "id", None)
+    user_id = user.id
     resolved_domain = _resolve_authz_domain(workspace_id, folder_id)
 
     external_context = get_current_external_access_context()
@@ -895,4 +898,49 @@ async def ensure_share_permission(
             "share_user_id": share_user_id,
         },
         domain_override=domain,
+    )
+
+
+async def ensure_resource_share_administration(
+    user: User | UserRead,
+    act: ShareAction | str,
+    *,
+    resource_type: str,
+    resource_id: UUID,
+    resource_owner_id: UUID | None,
+    project_id: UUID | None = None,
+    workspace_id: UUID | None = None,
+    share_id: UUID | None = None,
+    recipient_scope: str | None = None,
+    recipient_id: UUID | None = None,
+    subject_user_id: UUID | None = None,
+) -> None:
+    """Authorize share administration against the exact stored resource.
+
+    A global ``share:*`` object is insufficient on its own. The native service
+    uses these server-resolved identifiers to evaluate ownership and scoped
+    role authority, while the guard retains external-credential and owner
+    override behavior.
+    """
+    act_str = _coerce_action(act)
+    resolved_domain = _resolve_authz_domain(workspace_id, project_id)
+    await _ensure_resource_permission(
+        user,
+        resource_type="share",
+        resource_id=share_id,
+        owner_id=resource_owner_id,
+        owner_override_allowed=True,
+        act_str=act_str,
+        resolved_domain=resolved_domain,
+        extra_context={
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "resource_owner_id": resource_owner_id,
+            "resource_project_id": project_id,
+            "resource_workspace_id": workspace_id,
+            "recipient_scope": recipient_scope,
+            "recipient_id": recipient_id,
+            "subject_user_id": subject_user_id,
+            "share_user_id": resource_owner_id,
+        },
     )

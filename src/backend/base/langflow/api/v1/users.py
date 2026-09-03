@@ -9,7 +9,7 @@ from lfx.services.authorization import (
     UserAuthorizationSnapshot,
 )
 from lfx.utils.util_strings import escape_like_pattern
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 from sqlmodel.sql.expression import SelectOfScalar
@@ -26,11 +26,17 @@ from langflow.services.authorization.audit import (
 )
 from langflow.services.authorization.lifecycle import (
     acquire_identity_mutation_lock,
+    owned_resource_impact,
     safe_identity_mutation_committed,
+    safe_share_rules_removed,
     stage_identity_mutation,
     validate_identity_mutation,
 )
-from langflow.services.database.models.user.crud import get_user_by_id, update_user
+from langflow.services.authorization.team_management import (
+    UserTeamLifecycleResult,
+    apply_user_team_lifecycle,
+)
+from langflow.services.database.models.user.crud import update_user
 from langflow.services.database.models.user.model import User, UserCreate, UserRead, UserUpdate
 from langflow.services.deps import get_auth_service, get_authorization_service, get_settings_service
 
@@ -274,8 +280,14 @@ async def patch_user(
             affected_user_ids=(user_id,),
         )
 
-    if user_db := await get_user_by_id(session, user_id):
+    user_statement = select(User).where(User.id == user_id)
+    if possible_lifecycle_kind is not None:
+        if session.get_bind().dialect.name == "sqlite":
+            await session.exec(update(User).where(User.id == user_id).values(updated_at=User.updated_at))
+        user_statement = user_statement.with_for_update()
+    if user_db := (await session.exec(user_statement)).first():
         lifecycle_mutation: AuthorizationMutation | None = None
+        team_lifecycle = UserTeamLifecycleResult((), (), (), ())
         fields_changed = sorted(
             field
             for field in user_update.model_fields_set
@@ -334,12 +346,20 @@ async def patch_user(
                 reason="update_rejected",
             )
             raise
+        if lifecycle_mutation is not None and lifecycle_mutation.kind is AuthorizationMutationKind.USER_DISABLED:
+            team_lifecycle = await apply_user_team_lifecycle(
+                session,
+                actor_id=user.id,
+                user_id=user_db.id,
+                remove_memberships=False,
+            )
         if lifecycle_mutation is not None:
             await stage_identity_mutation(authorization_service, session, lifecycle_mutation)
         audit_details = {
             "event": AUDIT_EVENT_MUTATION,
             "fields_changed": fields_changed,
             "lifecycle_kind": lifecycle_mutation.kind.value if lifecycle_mutation is not None else None,
+            "teams_deactivated": [str(team_id) for team_id in team_lifecycle.deactivated_team_ids],
         }
         try:
             audit_staged = stage_audit_decision(
@@ -356,6 +376,8 @@ async def patch_user(
             raise
         if lifecycle_mutation is not None:
             await safe_identity_mutation_committed(authorization_service, lifecycle_mutation)
+        for team_event in team_lifecycle.events:
+            await safe_identity_mutation_committed(authorization_service, team_event)
         if not audit_staged:
             await audit_decision(
                 user_id=user.id,
@@ -439,7 +461,9 @@ async def delete_user(
         entity_id=user_id,
         affected_user_ids=(user_id,),
     )
-    stmt = select(User).where(User.id == user_id)
+    if session.get_bind().dialect.name == "sqlite":
+        await session.exec(update(User).where(User.id == user_id).values(updated_at=User.updated_at))
+    stmt = select(User).where(User.id == user_id).with_for_update()
     user_db = (await session.exec(stmt)).first()
     if not user_db:
         await _audit_deny(
@@ -450,6 +474,18 @@ async def delete_user(
             reason="user_not_found",
         )
         raise HTTPException(status_code=404, detail="User not found")
+
+    impact = await owned_resource_impact(session, user_id=user_id)
+    if impact.exists:
+        await session.rollback()
+        await _audit_deny(
+            user_id=current_user.id,
+            action="user:delete",
+            obj=f"user:{user_id}",
+            status_code=409,
+            reason="resource_ownership_requires_disposition",
+        )
+        raise HTTPException(status_code=409, detail=impact.public_detail())
 
     lifecycle_mutation = AuthorizationMutation(
         kind=AuthorizationMutationKind.USER_DELETED,
@@ -468,29 +504,42 @@ async def delete_user(
     except AuthorizationMutationRejected as exc:
         raise HTTPException(status_code=409, detail=exc.public_detail) from exc
 
-    # IMPORTANT:
-    # This endpoint intentionally performs a DB-cascade delete only and does
-    # not issue provider-side teardown across all user deployments.
-    # The trade-off is to avoid destructive bulk deletion of external
-    # deployment resources during user deletion.
-    await session.delete(user_db)
-    await session.flush()
-    await stage_identity_mutation(authorization_service, session, lifecycle_mutation)
-    audit_details = {
-        "event": AUDIT_EVENT_MUTATION,
-        "target_was_active": lifecycle_mutation.user_before.is_active,
-        "target_was_superuser": lifecycle_mutation.user_before.is_superuser,
-    }
-    audit_staged = stage_audit_decision(
-        session=session,
-        user_id=current_user.id,
-        action="user:delete",
-        obj=f"user:{user_id}",
-        result="allow",
-        details=audit_details,
-    )
-    await session.commit()
+    try:
+        team_lifecycle = await apply_user_team_lifecycle(
+            session,
+            actor_id=current_user.id,
+            user_id=user_id,
+            remove_memberships=True,
+        )
+        # Provider-side deployments are not deleted here. The ownership gate
+        # above requires their explicit disposition before account deletion.
+        await session.delete(user_db)
+        await session.flush()
+        await stage_identity_mutation(authorization_service, session, lifecycle_mutation)
+        audit_details = {
+            "event": AUDIT_EVENT_MUTATION,
+            "target_was_active": lifecycle_mutation.user_before.is_active,
+            "target_was_superuser": lifecycle_mutation.user_before.is_superuser,
+            "teams_deactivated": [str(team_id) for team_id in team_lifecycle.deactivated_team_ids],
+            "teams_retired": [str(team_id) for team_id in team_lifecycle.retired_team_ids],
+            "recipient_shares_removed": len(team_lifecycle.removed_share_snapshots),
+        }
+        audit_staged = stage_audit_decision(
+            session=session,
+            user_id=current_user.id,
+            action="user:delete",
+            obj=f"user:{user_id}",
+            result="allow",
+            details=audit_details,
+        )
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
     await safe_identity_mutation_committed(authorization_service, lifecycle_mutation)
+    for team_event in team_lifecycle.events:
+        await safe_identity_mutation_committed(authorization_service, team_event)
+    await safe_share_rules_removed(authorization_service, team_lifecycle.removed_share_snapshots)
     if not audit_staged:
         await audit_decision(
             user_id=current_user.id,

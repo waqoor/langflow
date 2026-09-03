@@ -78,9 +78,9 @@ const ListComponent = ({
       });
   };
 
-  const { can } = usePermissions();
-  // Moving a flow into another folder mutates its folder_id → gate on write.
-  const canMove = can(flowData.id, "write");
+  const { capability } = usePermissions();
+  // Moving a flow is intentionally narrower than ordinary graph editing.
+  const canMove = capability(flowData.id, "can_move");
 
   const { onDragStart } = useDragStart(flowData);
 
@@ -195,6 +195,13 @@ const ListComponent = ({
                 >
                   {flowData.name}
                 </span>
+                {flowData.is_owner === false && flowData.owner_username && (
+                  <span className="ml-2 shrink-0 text-xs font-normal text-muted-foreground">
+                    {t("sharedWithMe.owner", {
+                      owner: flowData.owner_username,
+                    })}
+                  </span>
+                )}
               </div>
               <div className="flex min-w-0 flex-shrink text-xs text-muted-foreground">
                 <span className="truncate">

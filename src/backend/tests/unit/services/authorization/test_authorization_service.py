@@ -30,8 +30,8 @@ async def test_enforce_allows_all_when_disabled(authz_service):
 
 
 @pytest.mark.anyio
-async def test_enforce_allows_non_superuser_when_enabled():
-    """OSS stub does not deny; authorization plugin replaces this service for enforcement."""
+async def test_enforce_denies_unresolved_object_when_enabled():
+    """The enhanced native service fails closed for malformed resource IDs."""
     settings = SimpleNamespace(
         auth_settings=SimpleNamespace(
             AUTHZ_ENABLED=True,
@@ -40,7 +40,7 @@ async def test_enforce_allows_non_superuser_when_enabled():
     )
     service = LangflowAuthorizationService(settings)
     user_id = uuid4()
-    assert await service.enforce(
+    assert not await service.enforce(
         user_id=user_id,
         domain="*",
         obj="flow:abc",
@@ -70,8 +70,8 @@ async def test_batch_enforce_all_true_when_disabled(authz_service):
 
 
 @pytest.mark.anyio
-async def test_batch_enforce_allows_non_superuser_when_enabled():
-    """OSS pass-through allows every batch request regardless of user context."""
+async def test_batch_enforce_denies_unresolved_objects_when_enabled():
+    """Enabled native enforcement preserves cardinality and fails closed."""
     settings = SimpleNamespace(
         auth_settings=SimpleNamespace(
             AUTHZ_ENABLED=True,
@@ -86,7 +86,7 @@ async def test_batch_enforce_allows_non_superuser_when_enabled():
         requests=requests,
         context={"is_superuser": False},
     )
-    assert result == [True, True]
+    assert result == [False, False]
 
 
 @pytest.mark.anyio
@@ -101,8 +101,8 @@ async def test_batch_enforce_empty_requests(authz_service):
 
 
 @pytest.mark.anyio
-async def test_get_allowed_actions_returns_all_actions():
-    """Pass-through service returns every requested action regardless of user/context."""
+async def test_get_allowed_actions_omits_unresolved_object_when_enabled():
+    """Malformed objects receive no actions from the native enforcer."""
     settings = SimpleNamespace(
         auth_settings=SimpleNamespace(
             AUTHZ_ENABLED=True,
@@ -118,7 +118,7 @@ async def test_get_allowed_actions_returns_all_actions():
         actions=actions,
         context={"is_superuser": False},
     )
-    assert result == actions
+    assert result == []
 
 
 @pytest.mark.anyio

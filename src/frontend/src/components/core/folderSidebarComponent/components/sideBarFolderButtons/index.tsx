@@ -68,10 +68,16 @@ const ProjectRenamePermission = ({
   children,
 }: {
   projectId: string;
-  children: (canRename: boolean) => ReactNode;
+  children: (capabilities: {
+    canRename: boolean;
+    canCreateFlow: boolean;
+  }) => ReactNode;
 }) => {
-  const { can } = usePermissions();
-  return children(can(projectId, "write"));
+  const { can, capability } = usePermissions();
+  return children({
+    canRename: can(projectId, "write"),
+    canCreateFlow: capability(projectId, "can_create_flow"),
+  });
 };
 
 const SideBarFoldersButtonsComponent = ({
@@ -177,7 +183,9 @@ const SideBarFoldersButtonsComponent = ({
 
       getObjectsFromFilelist<UploadedFlowFile>(files)
         .then((objects) => {
-          if (objects.every((flow) => flow.data?.nodes)) {
+          if (
+            objects.every((flow) => "data" in flow && Boolean(flow.data?.nodes))
+          ) {
             uploadFlow({ files })
               .then(() => {
                 setSuccessData({
@@ -310,6 +318,7 @@ const SideBarFoldersButtonsComponent = ({
         {
           data: body,
           folderId: item.id!,
+          editRevision: item.edit_revision,
         },
         {
           onSuccess: (updatedFolder) => {
@@ -467,13 +476,25 @@ const SideBarFoldersButtonsComponent = ({
                         >
                           <div className="relative flex w-full">
                             <ProjectRenamePermission projectId={item.id!}>
-                              {(canRename) => (
+                              {({ canRename, canCreateFlow }) => (
                                 <SidebarMenuButton
                                   size="md"
-                                  onDragOver={(e) => dragOver(e, item.id!)}
-                                  onDragEnter={(e) => dragEnter(e, item.id!)}
+                                  onDragOver={
+                                    canCreateFlow
+                                      ? (e) => dragOver(e, item.id!)
+                                      : undefined
+                                  }
+                                  onDragEnter={
+                                    canCreateFlow
+                                      ? (e) => dragEnter(e, item.id!)
+                                      : undefined
+                                  }
                                   onDragLeave={dragLeave}
-                                  onDrop={(e) => onDrop(e, item.id!)}
+                                  onDrop={
+                                    canCreateFlow
+                                      ? (e) => onDrop(e, item.id!)
+                                      : undefined
+                                  }
                                   key={item.id}
                                   data-testid={`sidebar-nav-${item.id}`}
                                   id={`sidebar-nav-${item.id}`}

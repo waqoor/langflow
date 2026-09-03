@@ -94,12 +94,13 @@ async def require_flow_create_permission(
         session,
         flow,
         current_user.id,
+        reject_invalid=flow.folder_id is not None,
         widen_for_authz=True,
     )
     _, destination_folder_id = destination
     # Read the owner off the *resolved* destination rather than the payload:
-    # canonicalization may have redirected an unusable folder_id to the
-    # caller's default project, and only the stored row can say who owns the
+    # canonicalization may have filled an omitted folder_id with the caller's
+    # default project, and only the stored row can say who owns the
     # project the flow will actually land in. This is what lets the owner
     # override cover creating a flow in a project you own — the new flow has no
     # owner of its own yet.

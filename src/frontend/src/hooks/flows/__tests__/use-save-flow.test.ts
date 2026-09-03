@@ -56,6 +56,7 @@ describe("useSaveFlow", () => {
 
     const savedFlow = {
       id: "flow-1",
+      edit_revision: 4,
       name: "Saved Flow",
       data: {
         nodes: [{ id: "old-node" }],
@@ -235,6 +236,7 @@ describe("useSaveFlow", () => {
       options.onSuccess({
         ...requestedFlow,
         ...payload,
+        edit_revision: payload.edit_revision + 1,
       });
     });
 
@@ -245,11 +247,13 @@ describe("useSaveFlow", () => {
     expect(mockMutate).toHaveBeenCalledTimes(2);
     expect(mockMutate.mock.calls[0][0]).toEqual({
       id: "flow-1",
+      edit_revision: 4,
       locked: false,
     });
     expect(mockMutate.mock.calls[1][0]).toEqual(
       expect.objectContaining({
         id: "flow-1",
+        edit_revision: 5,
         name: "Renamed after unlock",
         locked: false,
         data: requestedFlow.data,
@@ -315,6 +319,7 @@ describe("useSaveFlow", () => {
       options.onSuccess({
         ...requestedFlow,
         ...payload,
+        edit_revision: payload.edit_revision + 1,
       });
     });
 
@@ -325,11 +330,13 @@ describe("useSaveFlow", () => {
     expect(mockMutate).toHaveBeenCalledTimes(2);
     expect(mockMutate.mock.calls[0][0]).toEqual({
       id: "flow-1",
+      edit_revision: 4,
       locked: false,
     });
     expect(mockMutate.mock.calls[1][0]).toEqual(
       expect.objectContaining({
         id: "flow-1",
+        edit_revision: 5,
         locked: false,
         data: requestedFlow.data,
       }),
@@ -342,6 +349,7 @@ describe("useSaveFlow", () => {
     // flow being moved has no `data` field.
     const headerFlow = {
       id: "flow-1",
+      edit_revision: 4,
       name: "Saved Flow",
       data: null,
       description: "desc",
@@ -444,5 +452,34 @@ describe("useSaveFlow", () => {
     await expect(result.current()).resolves.toBeUndefined();
 
     expect(mockSetCurrentFlow).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps local content and explains a stale revision without retrying", async () => {
+    const staleError = {
+      response: {
+        status: 412,
+        data: {
+          detail: {
+            code: "RESOURCE_CHANGED",
+            message: "A newer revision exists.",
+          },
+        },
+      },
+    };
+    mockMutate.mockImplementation((_payload, options) => {
+      options.onError(staleError);
+    });
+    const localFlow = flowStoreState.currentFlow;
+    const { result } = renderHook(() => useSaveFlow());
+
+    await expect(result.current()).rejects.toBe(staleError);
+
+    expect(mockMutate).toHaveBeenCalledTimes(1);
+    expect(mockSetCurrentFlow).not.toHaveBeenCalled();
+    expect(flowStoreState.currentFlow).toBe(localFlow);
+    expect(mockSetErrorData).toHaveBeenCalledWith({
+      title: "Failed to save flow",
+      list: ["This workflow changed. Reload the latest version before saving."],
+    });
   });
 });

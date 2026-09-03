@@ -52,19 +52,27 @@ export default function PublishDropdown({
   const isPublished = currentFlow?.access_type === "PUBLIC";
   const hasIO = useFlowStore((state) => state.hasIO);
   const isAuth = useAuthStore((state) => !!state.autoLogin);
-  const { can } = usePermissions();
-  // Publishing changes the flow's access settings → gate on write. Only the
-  // publish controls are gated; the rest of the menu (API access, export,
-  // MCP, embed) stays available to read-only users.
-  const canShare = can(flowId, "write");
+  const { capability } = usePermissions();
+  // Publication is a separate owner/admin capability. Ordinary Can edit
+  // collaborators still retain read/run/export access without this switch.
+  const canManagePublication = capability(flowId, "can_manage_publication");
   const [openExportModal, setOpenExportModal] = useState(false);
   const { t } = useTranslation();
 
   const handlePublishedSwitch = async (checked: boolean) => {
+    if (!currentFlow) return;
+    if (typeof currentFlow.edit_revision !== "number") {
+      setErrorData({
+        title: t("errors.failedToSaveFlow"),
+        list: [t("errors.workflowRevisionUnavailable")],
+      });
+      return;
+    }
     try {
       await mutateAsync(
         {
-          id: flowId ?? "",
+          id: currentFlow.id,
+          edit_revision: currentFlow.edit_revision,
           access_type: checked ? "PRIVATE" : "PUBLIC",
         },
         {
@@ -124,7 +132,7 @@ export default function PublishDropdown({
           align="end"
           className="w-full min-w-[275px]"
         >
-          {/* Customization seam: overlays render a user/team share item; the OSS stub renders nothing. */}
+          {/* Capability-gated user/team sharing; unavailable services render no action. */}
           {flowId && (
             <CustomFlowShareAction
               resourceId={flowId}
@@ -179,7 +187,7 @@ export default function PublishDropdown({
           {ENABLE_PUBLISH && (
             <DropdownMenuItem
               className="deploy-dropdown-item group"
-              disabled={!canShare || !hasIO}
+              disabled={!canManagePublication || !hasIO}
               onClick={() => {}}
               data-testid="shareable-playground"
             >
@@ -225,7 +233,7 @@ export default function PublishDropdown({
                   data-testid="publish-switch"
                   className="scale-[85%]"
                   checked={isPublished}
-                  disabled={!canShare || !hasIO}
+                  disabled={!canManagePublication || !hasIO}
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();

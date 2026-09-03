@@ -2,9 +2,19 @@ import { defineConfig, devices } from "@playwright/test";
 import * as dotenv from "dotenv";
 import path from "path";
 import { PORT } from "./src/customization/config-constants";
+import {
+  getE2EArtifactNamespace,
+  getE2EDatabaseDirectory,
+  getE2ETestIgnore,
+  isAuthzE2EMode,
+} from "./tests/utils/authz-e2e-mode.mjs";
 
 dotenv.config();
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+
+const authzMode = isAuthzE2EMode();
+const artifactNamespace = getE2EArtifactNamespace();
+const databaseDirectory = getE2EDatabaseDirectory();
 
 /**
  * Read environment variables from file.
@@ -16,15 +26,16 @@ dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
 export default defineConfig({
   testDir: "./tests",
-  testIgnore: "**/live/**",
+  testIgnore: getE2ETestIgnore(),
   /* Run tests in files in parallel */
-  fullyParallel: true,
+  fullyParallel: !authzMode,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
   forbidOnly: !!process.env.CI,
   /* Retry on CI only */
-  retries: 1,
+  retries: authzMode ? 0 : 1,
   /* Opt out of parallel tests on CI. */
-  workers: 2,
+  workers: authzMode ? 1 : 2,
+  outputDir: authzMode ? "test-results-authz" : "test-results",
   /* Reporter to use. See https://playwright.dev/docs/test-reporters */
   timeout: 5 * 60 * 1000, // 5 minutes
   expect: {
@@ -37,10 +48,18 @@ export default defineConfig({
   //   ["html", { open: "never", outputFolder: "playwright-report/test-results" }],
   // ],
   reporter: process.env.CI
-    ? "blob"
+    ? [["blob", { outputDir: `blob-report-${artifactNamespace}` }]]
     : [
         ["list"], // console output in terminal
-        ["html", { outputFolder: "playwright-report", open: "never" }], // generate HTML, don't open
+        [
+          "html",
+          {
+            outputFolder: authzMode
+              ? "playwright-report-authz"
+              : "playwright-report",
+            open: "never",
+          },
+        ], // generate HTML, don't open
       ],
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
@@ -130,10 +149,19 @@ export default defineConfig({
         "uv run uvicorn --factory langflow.main:create_app --host localhost --port 7860 --loop asyncio --log-level error --no-access-log",
       port: 7860,
       env: {
-        LANGFLOW_DATABASE_URL: "sqlite:///./temp",
-        LANGFLOW_AUTO_LOGIN: "true",
+        LANGFLOW_DATABASE_URL: `sqlite:///./${databaseDirectory}`,
+        LANGFLOW_CONFIG_DIR: authzMode
+          ? "./temp-authz-config"
+          : "./temp-config",
+        LANGFLOW_AUTO_LOGIN: authzMode ? "false" : "true",
+        ...(authzMode ? { LANGFLOW_RATE_LIMIT_ENABLED: "false" } : {}),
         LANGFLOW_SUPERUSER: "langflow",
         LANGFLOW_SUPERUSER_PASSWORD: "test-superuser-password", // pragma: allowlist secret
+        LANGFLOW_AUTHZ_ENABLED: authzMode ? "true" : "false",
+        LANGFLOW_AUTHZ_SUPERUSER_BYPASS: "true",
+        LANGFLOW_AUTHZ_AUDIT_ENABLED: authzMode ? "true" : "false",
+        LANGFLOW_AUTHZ_AUDIT_DURABLE: authzMode ? "true" : "false",
+        LANGFLOW_AUTHZ_AUDIT_RETENTION_DAYS: "30",
         LANGFLOW_DEACTIVATE_TRACING: "true",
         LANGFLOW_LOG_LEVEL: "ERROR",
         OPENAI_API_KEY: "langflow-loopback-test-key", // pragma: allowlist secret
@@ -149,7 +177,7 @@ export default defineConfig({
         process.env.CI && process.platform === "win32" ? "pipe" : "ignore",
       stderr: "pipe",
 
-      reuseExistingServer: true,
+      reuseExistingServer: !authzMode,
       // Windows CI runners can spend 60s+ on imports plus the Alembic
       // migration chain against the fresh SQLite DB before the port opens;
       // 90s boots are routinely lost there.
@@ -160,8 +188,9 @@ export default defineConfig({
       port: PORT || 3000,
       env: {
         VITE_PROXY_TARGET: "http://localhost:7860",
+        LANGFLOW_E2E_AUTHZ: authzMode ? "true" : "false",
       },
-      reuseExistingServer: true,
+      reuseExistingServer: !authzMode,
     },
   ],
 });

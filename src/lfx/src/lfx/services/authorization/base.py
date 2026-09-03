@@ -37,6 +37,19 @@ class AuthzContext(TypedDict, total=False):
     api_key_id: _UUID | None
     api_key_source: str | None
     external_provider: str | None
+    # These values are resolved by Langflow from canonical rows. Keep this
+    # interface identifier-only: graph data, credentials, and identity claims
+    # must never cross the authorization-service boundary.
+    resource_type: str
+    resource_id: _UUID | None
+    resource_owner_id: _UUID | None
+    resource_project_id: _UUID | None
+    resource_workspace_id: _UUID | None
+    recipient_scope: str | None
+    recipient_id: _UUID | None
+    subject_user_id: _UUID | None
+    intrinsic_creation: bool
+    destination_owner_id: _UUID | None
 
 
 PUBLIC_ANONYMOUS_ACTOR_ID = uuid5(NAMESPACE_URL, "urn:langflow:principal:anonymous-public")
@@ -123,6 +136,7 @@ class AuthorizationMutationKind(str, Enum):
     TEAM_DELETED = "team.deleted"
     TEAM_MEMBER_ADDED = "team_member.added"
     TEAM_MEMBER_REMOVED = "team_member.removed"
+    TEAM_MEMBER_ROLE_CHANGED = "team_member.role_changed"
     API_KEY_CREATED = "api_key.created"  # pragma: allowlist secret
     API_KEY_DELETED = "api_key.deleted"  # pragma: allowlist secret
 
@@ -306,6 +320,22 @@ class BaseAuthorizationService(Service, abc.ABC):
     async def supports_public_principals(self) -> bool:
         """Return whether this service can safely authorize anonymous principals."""
         return self.SUPPORTS_PUBLIC_PRINCIPALS
+
+    async def supports_team_roles(self) -> bool:
+        """Return whether team-scoped admin/maintainer/user roles are enforced.
+
+        This probe is deliberately non-abstract so existing plugins remain
+        source compatible. Schema presence alone is not sufficient support.
+        """
+        return False
+
+    async def supports_user_team_sharing(self) -> bool:
+        """Return whether canonical user/team resource shares are enforced."""
+        return False
+
+    async def supports_conditional_writes(self) -> bool:
+        """Return whether native optimistic-write preconditions are supported."""
+        return False
 
     async def resolve_public_tenant(self, request: PublicAuthorizationRequest) -> str | None:
         """Resolve the trusted tenant for an anonymous request, or deny by returning ``None``.
@@ -581,6 +611,7 @@ class BaseAuthorizationService(Service, abc.ABC):
             AuthorizationMutationKind.ROLE_ASSIGNMENT_DELETED,
             AuthorizationMutationKind.TEAM_MEMBER_ADDED,
             AuthorizationMutationKind.TEAM_MEMBER_REMOVED,
+            AuthorizationMutationKind.TEAM_MEMBER_ROLE_CHANGED,
             AuthorizationMutationKind.API_KEY_CREATED,
             AuthorizationMutationKind.API_KEY_DELETED,
         }
