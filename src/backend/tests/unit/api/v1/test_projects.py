@@ -474,6 +474,31 @@ async def test_read_projects_pagination(client: AsyncClient, logged_in_headers):
         assert result.get("limit") == 1
 
 
+async def test_read_projects_standard_page_is_bounded(client: AsyncClient, logged_in_headers):
+    for index in range(2):
+        response = await client.post(
+            "api/v1/projects/",
+            json={"name": f"paged-project-{index}-{uuid4()}"},
+            headers=logged_in_headers,
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+
+    all_response = await client.get("api/v1/projects/", headers=logged_in_headers)
+    response = await client.get(
+        "api/v1/projects/",
+        params={"get_all": False, "page": 1, "size": 1},
+        headers=logged_in_headers,
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    result = response.json()
+    assert len(result["items"]) == 1
+    assert result["page"] == 1
+    assert result["size"] == 1
+    assert result["total"] >= 2
+    assert result["total"] == len(all_response.json())
+
+
 async def test_read_projects_empty(client: AsyncClient, logged_in_headers):
     # Ensure DB is clean by fetching with a random header that forces each test transactional isolation
     random_headers = {**logged_in_headers, "X-Transaction-ID": str(uuid4())}

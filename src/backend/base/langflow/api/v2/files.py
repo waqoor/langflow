@@ -18,7 +18,10 @@ from langflow.api.schemas import UploadFileResponse
 from langflow.api.utils import CurrentActiveUser, DbSession, build_content_disposition
 from langflow.services.authorization import FileAction, ensure_file_permission
 from langflow.services.authorization.fetch import authorized_or_owner_scoped, deny_to_404
-from langflow.services.authorization.listing import restrict_to_owned_or_visible_scope, visible_scope_prefilter
+from langflow.services.authorization.listing import (
+    apply_owned_or_visible_scope_prefilter,
+    visible_scope_prefilter,
+)
 from langflow.services.database.models.file.model import File as UserFile
 from langflow.services.deps import get_settings_service, get_storage_service
 from langflow.services.settings.service import SettingsService
@@ -498,7 +501,7 @@ async def list_files(
         else:
             # UserFile has no canonical workspace/project columns. Omitting
             # them intentionally keeps domain-only grants owner-scoped.
-            stmt = restrict_to_owned_or_visible_scope(
+            stmt = await apply_owned_or_visible_scope_prefilter(
                 stmt,
                 id_column=UserFile.id,
                 owner_clause=UserFile.user_id == current_user.id,

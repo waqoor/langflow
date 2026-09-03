@@ -245,11 +245,13 @@ async def test_patch_user_wrong_id(client: AsyncClient, logged_in_headers):
 
 
 @pytest.mark.api_key_required
-async def test_delete_user(client: AsyncClient, test_user, super_user_headers):
+async def test_delete_user_rejects_owned_resources(client: AsyncClient, test_user, super_user_headers):
     user_id = test_user["id"]
     response = await client.delete(f"/api/v1/users/{user_id}", headers=super_user_headers)
-    assert response.status_code == 200
-    assert response.json() == {"detail": "User deleted"}
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "RESOURCE_OWNERSHIP_REQUIRES_DISPOSITION"
+    assert detail["owned_resources"]["project"] >= 1
 
 
 @pytest.mark.api_key_required

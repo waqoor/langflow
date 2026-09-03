@@ -36,6 +36,7 @@ from langflow.services.authorization.repository import (
     resolve_resources,
     user_can_manage_resource_shares,
 )
+from langflow.services.authorization.team_management import actor_can_administer_platform
 from langflow.services.database.models.deployment.model import Deployment
 from langflow.services.database.models.file.model import File as UserFile
 from langflow.services.database.models.flow.model import Flow
@@ -43,7 +44,7 @@ from langflow.services.database.models.folder.model import Folder
 from langflow.services.database.models.knowledge_base.model import KnowledgeBaseRecord
 from langflow.services.database.models.user.model import User
 from langflow.services.database.models.variable.model import Variable
-from langflow.services.deps import get_authorization_service, get_settings_service
+from langflow.services.deps import get_authorization_service
 
 router = APIRouter(prefix="/authz/me", tags=["Authorization"])
 
@@ -165,7 +166,6 @@ async def _derive_resource_capabilities(
         return derived
     try:
         collaboration = await discover_collaboration_capabilities()
-        superuser_bypass = bool(getattr(get_settings_service().auth_settings, "AUTHZ_SUPERUSER_BYPASS", True))
     except CollaborationCapabilityError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -184,10 +184,10 @@ async def _derive_resource_capabilities(
     )
     external_context = get_current_external_access_context()
     credential_can_manage_shares = external_context is None or external_context.level == EXTERNAL_ACCESS_ADMIN
+    platform_admin = actor_can_administer_platform(current_user)
     for resource_id, resource in resources.items():
         allowed = set(permissions.get(resource_id, ()))
         owns = resource.owner_id == current_user.id
-        platform_admin = current_user.is_superuser is True and superuser_bypass
         can_manage_shares = False
         if collaboration.collaboration_ready:
             can_manage_shares = await user_can_manage_resource_shares(
@@ -195,7 +195,7 @@ async def _derive_resource_capabilities(
                 user=current_user,
                 resource=resource,
                 share_action="read",
-                superuser_bypass=superuser_bypass,
+                superuser_bypass=platform_admin,
             )
         derived[resource_id] = ResourceCapabilities(
             can_use=("execute" in allowed if resource.resource_type == "flow" else "read" in allowed),

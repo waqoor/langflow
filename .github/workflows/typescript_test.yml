@@ -118,6 +118,10 @@ env:
   LANGFLOW_FEATURE_WXO_DEPLOYMENTS: "true"
   LANGFLOW_E2E_AUTHZ: ${{ inputs['authz-mode'] && 'true' || 'false' }}
   PLAYWRIGHT_ARTIFACT_NAMESPACE: ${{ inputs['authz-mode'] && 'authz' || 'core' }}
+  # The dedicated collaboration suite is also the blocking IBM Equal Access
+  # scan for the authenticated team/share surfaces it exercises.
+  RUN_A11Y: ${{ inputs['authz-mode'] && 'true' || 'false' }}
+  RUN_A11Y_ASSERT: ${{ inputs['authz-mode'] && 'true' || 'false' }}
 
 jobs:
   determine-test-suite:
@@ -498,6 +502,16 @@ jobs:
           name: playwright-coverage-${{ env.PLAYWRIGHT_ARTIFACT_NAMESPACE }}-${{ runner.os }}-${{ matrix.shardIndex }}-attempt-${{ github.run_attempt }}
           path: ${{ inputs['authz-mode'] && 'src/frontend/coverage/playwright-authz' || 'src/frontend/coverage/playwright' }}
           retention-days: 7
+          overwrite: true
+
+      - name: Upload Team Sharing IBM Equal Access reports
+        if: ${{ always() && inputs['authz-mode'] }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: accessibility-report-authz-${{ runner.os }}-attempt-${{ github.run_attempt }}
+          path: src/frontend/coverage/accessibility-reports
+          if-no-files-found: error
+          retention-days: 30
           overwrite: true
 
       - name: Upload Windows server log

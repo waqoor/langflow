@@ -3788,6 +3788,46 @@
         "title": "Page[FlowRead]",
         "type": "object"
       },
+      "Page_FolderListRead_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FolderListRead"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "minimum": 1.0,
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "minimum": 0.0,
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "minimum": 1.0,
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[FolderListRead]",
+        "type": "object"
+      },
       "Page_TransactionLogsResponse_": {
         "properties": {
           "items": {
@@ -13405,6 +13445,48 @@
               "title": "Shared Only",
               "type": "boolean"
             }
+          },
+          {
+            "in": "query",
+            "name": "get_all",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Get All",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Page"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Size"
+            }
           }
         ],
         "responses": {
@@ -13412,11 +13494,18 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/FolderListRead"
-                  },
-                  "title": "Response Read Projects Api V1 Projects  Get",
-                  "type": "array"
+                  "anyOf": [
+                    {
+                      "items": {
+                        "$ref": "#/components/schemas/FolderListRead"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Page_FolderListRead_"
+                    }
+                  ],
+                  "title": "Response Read Projects Api V1 Projects  Get"
                 }
               }
             },
@@ -14293,7 +14382,7 @@
         ]
       },
       "post": {
-        "description": "Add a new user to the database.\n\nThis endpoint backs two flows that share the same route:\n\n* Public sign up (unauthenticated). Allowed only when public registration is\n  enabled for the deployment, i.e. AUTO_LOGIN is off (multi-user mode) and\n  ENABLE_SIGNUP is True.\n* Admin \"add user\" (authenticated active superuser). Always allowed,\n  regardless of the sign up settings, so disabling public sign up does not\n  break superuser-driven user creation.\n\nUser activation is controlled by the NEW_USER_IS_ACTIVE setting.",
+        "description": "Add a new user to the database.\n\nThis endpoint backs two flows that share the same route:\n\n* Public sign up (unauthenticated). Allowed only when public registration is\n  enabled for the deployment, i.e. AUTO_LOGIN is off (multi-user mode) and\n  ENABLE_SIGNUP is True.\n* Admin \"add user\" (authenticated Platform Admin). Always allowed,\n  regardless of the sign up settings, so disabling public sign up does not\n  break administrator-driven user creation.\n\nUser activation is controlled by the NEW_USER_IS_ACTIVE setting.",
         "operationId": "add_user_api_v1_users__post",
         "requestBody": {
           "content": {

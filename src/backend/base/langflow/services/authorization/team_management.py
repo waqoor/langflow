@@ -32,7 +32,7 @@ from langflow.services.database.models.auth import (
     TeamInactivationReason,
     TeamRole,
 )
-from langflow.services.database.models.user.model import User
+from langflow.services.database.models.user.model import User, UserRead
 from langflow.services.deps import get_authorization_service, get_settings_service
 
 if TYPE_CHECKING:
@@ -219,7 +219,7 @@ async def team_actor_capabilities(
     return team_actor_capabilities_for_role(actor=actor, role=role)
 
 
-def actor_can_administer_platform(actor: User) -> bool:
+def actor_can_administer_platform(actor: User | UserRead) -> bool:
     """Apply active-user, configured bypass, and credential-ceiling gates."""
     if actor.is_active is not True or actor.is_superuser is not True:
         return False

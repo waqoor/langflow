@@ -114,7 +114,7 @@ async def _authorize_team_search(
             )
         )
     ).first()
-    if current_user.is_superuser is not True and membership is None:
+    if not actor_can_administer_platform(current_user) and membership is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
     capabilities = await team_actor_capabilities(session, actor=current_user, team_id=team_id)
     if not capabilities.can_add_user_member:

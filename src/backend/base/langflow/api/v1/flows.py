@@ -69,9 +69,9 @@ from langflow.initial_setup.constants import STARTER_FOLDER_NAME
 from langflow.services.auth.utils import get_current_active_user, get_optional_user
 from langflow.services.authorization import (
     FlowAction,
+    apply_owned_or_visible_scope_prefilter,
     ensure_flow_permission,
     filter_visible_resources,
-    restrict_to_owned_or_visible_scope,
     visible_scope_prefilter,
 )
 from langflow.services.authorization.collaboration import CollaborationCapabilityError
@@ -89,6 +89,7 @@ from langflow.services.authorization.public_access import (
     public_flow_capabilities,
 )
 from langflow.services.authorization.share_management import delete_resource_shares
+from langflow.services.authorization.team_management import actor_can_administer_platform
 from langflow.services.authorization.utils import _resolve_authz_domain
 from langflow.services.cache.service import ThreadingInMemoryCache
 from langflow.services.database.lock_retry import (
@@ -404,6 +405,11 @@ async def create_flow(
             session=session,
             description="flow creation",
         )
+        # A collaborator may create a child inside another user's shared
+        # project and the project owner may read it in the next request. Commit
+        # before returning so that cross-session read is never asked to
+        # authorize a row that is still only visible to this transaction.
+        await session.commit()
         response.headers["ETag"] = strong_etag("flow", created.id, created.edit_revision)
         return created  # noqa: TRY300 - keep the route's existing error translation structure
     except HTTPException as exc:
@@ -464,7 +470,9 @@ async def read_flows(
                 detail="Starter project and default project not found. Please create a project and add flows to it.",
             )
 
-        if not folder_id:
+        # A paginated Shared with me query spans all projects. Normal list
+        # callers retain the historical implicit default-project selection.
+        if not folder_id and not shared_only:
             folder_id = default_folder_id
 
         # Rows the caller owns outright. Under AUTO_LOGIN the legacy owner-scoped
@@ -492,7 +500,7 @@ async def read_flows(
                 (col(Flow.folder_id).is_not(None), Folder.workspace_id),
                 else_=Flow.workspace_id,
             )
-            stmt = restrict_to_owned_or_visible_scope(
+            stmt = await apply_owned_or_visible_scope_prefilter(
                 select(Flow).outerjoin(Folder, Folder.id == Flow.folder_id),
                 id_column=Flow.id,
                 owner_clause=owned_clause,
@@ -567,7 +575,10 @@ async def read_flows(
             ]
             return compress_response(flow_reads)
 
-        stmt = stmt.where(Flow.folder_id == folder_id)
+        if folder_id is not None:
+            stmt = stmt.where(Flow.folder_id == folder_id)
+        if shared_only:
+            stmt = stmt.order_by(Flow.name, Flow.id)
 
         import warnings
 
@@ -731,7 +742,7 @@ async def update_flow(
         if requested_folder_id is not None:
             flow.folder_id = target_folder_id
         if target_workspace_id != db_flow.workspace_id or target_folder_id != db_flow.folder_id:
-            if db_flow.user_id != actor.id and actor.is_superuser is not True:
+            if db_flow.user_id != actor.id and not actor_can_administer_platform(actor):
                 raise HTTPException(status_code=403, detail="Only a workflow owner may move it.")
             try:
                 await ensure_flow_permission(
@@ -794,7 +805,7 @@ async def update_flow(
                 attempt_target_workspace_id != db_flow_for_attempt.workspace_id
                 or attempt_target_folder_id != db_flow_for_attempt.folder_id
             ):
-                if db_flow_for_attempt.user_id != actor.id and actor.is_superuser is not True:
+                if db_flow_for_attempt.user_id != actor.id and not actor_can_administer_platform(actor):
                     raise HTTPException(status_code=403, detail="Only a workflow owner may move it.")
                 try:
                     await ensure_flow_permission(
@@ -827,7 +838,7 @@ async def update_flow(
                 if_match=if_match,
                 precondition_required=precondition_required,
                 widen_for_authz=True,
-                actor_is_platform_admin=actor.is_superuser is True,
+                actor_is_platform_admin=actor_can_administer_platform(actor),
             )
 
         async def update_attempt(_attempt: int) -> FlowRead:
@@ -942,7 +953,7 @@ async def upsert_flow(
             if requested_folder_id is not None:
                 flow.folder_id = target_folder_id
             if target_workspace_id != existing_flow.workspace_id or target_folder_id != existing_flow.folder_id:
-                if existing_flow.user_id != current_user.id and current_user.is_superuser is not True:
+                if existing_flow.user_id != current_user.id and not actor_can_administer_platform(current_user):
                     raise HTTPException(status_code=403, detail="Only a workflow owner may move it.")
                 try:
                     await ensure_flow_permission(
@@ -1002,7 +1013,9 @@ async def upsert_flow(
                     attempt_target_workspace_id != existing_flow_for_attempt.workspace_id
                     or attempt_target_folder_id != existing_flow_for_attempt.folder_id
                 ):
-                    if existing_flow_for_attempt.user_id != current_user.id and current_user.is_superuser is not True:
+                    if existing_flow_for_attempt.user_id != current_user.id and not actor_can_administer_platform(
+                        current_user
+                    ):
                         raise HTTPException(status_code=403, detail="Only a workflow owner may move it.")
                     try:
                         await ensure_flow_permission(
@@ -1367,7 +1380,7 @@ async def upload_file(
             if (
                 destination_changed
                 and existing_flow.user_id != current_user.id
-                and current_user.is_superuser is not True
+                and not actor_can_administer_platform(current_user)
             ):
                 raise HTTPException(status_code=403, detail="Only a workflow owner may move it.")
             try:

@@ -184,7 +184,7 @@ async def test_user_disable_validates_and_stages_in_transaction_order(monkeypatc
 
     events: list[str] = []
     service = _LifecycleService(events)
-    actor = SimpleNamespace(id=uuid4(), is_superuser=True)
+    actor = SimpleNamespace(id=uuid4(), is_active=True, is_superuser=True)
     target = SimpleNamespace(
         id=uuid4(),
         is_active=True,
@@ -257,7 +257,7 @@ async def test_ordinary_user_patch_stages_audit_without_password_or_values(monke
     from langflow.services.database.models.user.model import UserUpdate
 
     events: list[str] = []
-    actor = SimpleNamespace(id=uuid4(), is_superuser=True)
+    actor = SimpleNamespace(id=uuid4(), is_active=True, is_superuser=True)
     target = SimpleNamespace(
         id=uuid4(),
         username="before",
@@ -330,7 +330,7 @@ async def test_user_patch_audit_stage_failure_rolls_back_before_commit(monkeypat
     from langflow.api.v1 import users
     from langflow.services.database.models.user.model import UserUpdate
 
-    actor = SimpleNamespace(id=uuid4(), is_superuser=True)
+    actor = SimpleNamespace(id=uuid4(), is_active=True, is_superuser=True)
     target = SimpleNamespace(
         id=uuid4(),
         username="before",
@@ -370,7 +370,7 @@ async def test_user_patch_business_denial_emits_access_audit(monkeypatch):
     from langflow.services.authorization.audit import AUDIT_EVENT_ACCESS
     from langflow.services.database.models.user.model import UserUpdate
 
-    actor = SimpleNamespace(id=uuid4(), is_superuser=True)
+    actor = SimpleNamespace(id=uuid4(), is_active=True, is_superuser=True)
     session = AsyncMock()
     audit_calls = []
 
@@ -408,7 +408,7 @@ async def test_non_superuser_delete_reaches_audited_gate(monkeypatch):
     from langflow.api.v1 import users
     from langflow.services.authorization.audit import AUDIT_EVENT_ACCESS
 
-    actor = SimpleNamespace(id=uuid4(), is_superuser=False)
+    actor = SimpleNamespace(id=uuid4(), is_active=True, is_superuser=False)
     target_id = uuid4()
     session = AsyncMock()
     audit_calls = []
@@ -439,13 +439,72 @@ async def test_non_superuser_delete_reaches_audited_gate(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_user_directory_platform_actions_honor_external_credential_ceiling(monkeypatch):
+    from langflow.api.v1 import users
+    from langflow.services.authorization.access_ceiling import (
+        ExternalAccessContext,
+        set_current_external_access_context,
+    )
+    from langflow.services.database.models.user.model import UserCreate, UserUpdate
+    from langflow.services.deps import get_settings_service
+
+    actor = SimpleNamespace(id=uuid4(), is_active=True, is_superuser=True)
+    target_id = uuid4()
+    session = AsyncMock()
+    monkeypatch.setattr(users, "audit_decision", AsyncMock())
+
+    auth_settings = get_settings_service().auth_settings
+    original_bypass = auth_settings.AUTHZ_SUPERUSER_BYPASS
+    original_signup = auth_settings.ENABLE_SIGNUP
+    original_auto_login = auth_settings.AUTO_LOGIN
+    auth_settings.AUTHZ_SUPERUSER_BYPASS = True
+    auth_settings.ENABLE_SIGNUP = False
+    auth_settings.AUTO_LOGIN = False
+    set_current_external_access_context(
+        ExternalAccessContext(provider="test-idp", subject="platform-user", level="editor")
+    )
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await users._get_current_platform_admin(actor)
+        assert exc_info.value.status_code == 403
+
+        with pytest.raises(HTTPException) as exc_info:
+            await users.add_user(
+                user=UserCreate(username="blocked-admin-create", password="not-a-real-password"),  # noqa: S106
+                session=session,
+                current_user=actor,
+            )
+        assert exc_info.value.status_code == 403
+
+        with pytest.raises(HTTPException) as exc_info:
+            await users.patch_user(
+                user_id=target_id,
+                user_update=UserUpdate(username="blocked-cross-user-update"),
+                user=actor,
+                session=session,
+            )
+        assert exc_info.value.status_code == 403
+
+        with pytest.raises(HTTPException) as exc_info:
+            await users.delete_user(user_id=target_id, current_user=actor, session=session)
+        assert exc_info.value.status_code == 403
+    finally:
+        set_current_external_access_context(None)
+        auth_settings.AUTHZ_SUPERUSER_BYPASS = original_bypass
+        auth_settings.ENABLE_SIGNUP = original_signup
+        auth_settings.AUTO_LOGIN = original_auto_login
+
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_user_patch_lock_kind_is_advisory_before_state_read(monkeypatch):
     from langflow.api.v1 import users
     from langflow.services.database.models.user.model import UserUpdate
 
     events: list[str] = []
     service = _LifecycleService(events)
-    actor = SimpleNamespace(id=uuid4(), is_superuser=True)
+    actor = SimpleNamespace(id=uuid4(), is_active=True, is_superuser=True)
     target = SimpleNamespace(
         id=uuid4(),
         is_active=False,
@@ -493,7 +552,7 @@ async def test_user_lifecycle_stage_failure_prevents_commit(monkeypatch):
 
     events: list[str] = []
     service = _LifecycleService(events, fail_stage=True)
-    actor = SimpleNamespace(id=uuid4(), is_superuser=True)
+    actor = SimpleNamespace(id=uuid4(), is_active=True, is_superuser=True)
     target = SimpleNamespace(
         id=uuid4(),
         is_active=True,
@@ -531,7 +590,7 @@ async def test_user_lifecycle_policy_rejection_is_409_without_mutation(monkeypat
 
     events: list[str] = []
     service = _LifecycleService(events)
-    actor = SimpleNamespace(id=uuid4(), is_superuser=True)
+    actor = SimpleNamespace(id=uuid4(), is_active=True, is_superuser=True)
     target = SimpleNamespace(
         id=uuid4(),
         is_active=True,
@@ -685,7 +744,7 @@ async def test_assignment_delete_validates_live_row_before_mutation_and_stage(mo
 
     events: list[str] = []
     service = _LifecycleService(events)
-    actor = SimpleNamespace(id=uuid4(), is_superuser=True)
+    actor = SimpleNamespace(id=uuid4(), is_active=True, is_superuser=True)
     assignment = SimpleNamespace(
         id=uuid4(),
         user_id=uuid4(),
@@ -731,7 +790,7 @@ async def test_assignment_delete_policy_rejection_is_409_without_mutation(monkey
 
     events: list[str] = []
     service = _LifecycleService(events)
-    actor = SimpleNamespace(id=uuid4(), is_superuser=True)
+    actor = SimpleNamespace(id=uuid4(), is_active=True, is_superuser=True)
     assignment = SimpleNamespace(
         id=uuid4(),
         user_id=uuid4(),

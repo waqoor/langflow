@@ -16,7 +16,9 @@ from fastapi import HTTPException
 from langflow.api.v1 import authz_capabilities, authz_recipients
 from langflow.services import deps as langflow_deps
 from langflow.services.authorization import collaboration, share_management, team_management
+from langflow.services.authorization.access_ceiling import ExternalAccessContext, set_current_external_access_context
 from langflow.services.authorization.concurrency import strong_etag
+from langflow.services.authorization.listing import resource_visible_in_scope
 from langflow.services.authorization.service import LangflowAuthorizationService
 from langflow.services.database.models.auth import (
     AuthzAuditLog,
@@ -33,6 +35,7 @@ from langflow.services.database.models.flow.model import Flow
 from langflow.services.database.models.folder.model import Folder
 from langflow.services.database.models.user.model import User
 from lfx.services import deps as lfx_deps
+from lfx.services.authorization.base import ResourceVisibilityScope
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -311,6 +314,21 @@ async def test_capabilities_endpoint_reports_only_ready_native_service_contract(
     assert result.can_administer_platform is True
     assert result.can_create_team is True
 
+    set_current_external_access_context(ExternalAccessContext(provider="test-idp", subject="platform", level="editor"))
+    try:
+        async with collaboration_db.session() as session:
+            actor = await session.get(User, platform.id)
+            assert actor is not None
+            credential_restricted = await authz_capabilities.get_authorization_capabilities(
+                current_user=actor,
+                session=session,
+            )
+    finally:
+        set_current_external_access_context(None)
+
+    assert credential_restricted.can_administer_platform is False
+    assert credential_restricted.can_create_team is False
+
     collaboration_db.service.settings_service.auth_settings.AUTHZ_SUPERUSER_BYPASS = False
     async with collaboration_db.session() as session:
         actor = await session.get(User, platform.id)
@@ -440,6 +458,293 @@ async def test_native_service_enforces_direct_team_and_project_inherited_shares(
         await session.commit()
 
     assert not await service.enforce(user_id=editor.id, domain="*", obj=f"flow:{flow_id}", act="read")
+
+
+@pytest.mark.asyncio
+async def test_native_service_expands_role_wildcards_into_concrete_actions(
+    collaboration_db: CollaborationDatabase,
+):
+    owner = _user("wildcard-owner")
+    actor = _user("wildcard-actor")
+    await _seed_users(collaboration_db, owner, actor)
+
+    async with collaboration_db.session() as session:
+        project = Folder(name=f"wildcard-project-{uuid4()}", user_id=owner.id)
+        role = AuthzRole(
+            name=f"wildcard-role-{uuid4()}",
+            permissions=["flow:*", "share:*"],
+        )
+        session.add_all([project, role])
+        await session.flush()
+        flow = Flow(name=f"wildcard-flow-{uuid4()}", user_id=owner.id, folder_id=project.id, data={})
+        assignment = AuthzRoleAssignment(
+            user_id=actor.id,
+            role_id=role.id,
+            domain_type="global",
+            domain_id=None,
+        )
+        session.add_all([flow, assignment])
+        await session.commit()
+        flow_id = flow.id
+
+    service = collaboration_db.service
+    for action in ("read", "write", "execute", "delete", "deploy"):
+        assert await service.enforce(user_id=actor.id, domain="*", obj=f"flow:{flow_id}", act=action)
+    assert not await service.enforce(user_id=actor.id, domain="*", obj=f"flow:{flow_id}", act="unknown")
+    assert await service.enforce(
+        user_id=actor.id,
+        domain="*",
+        obj="share:*",
+        act="create",
+        context={"resource_type": "flow", "resource_id": flow_id},
+    )
+
+    permissions = await service.get_effective_permissions(
+        user_id=actor.id,
+        resource_type="flow",
+        resource_ids=[flow_id],
+        actions=["read", "write", "execute", "delete", "deploy", "unknown"],
+    )
+    assert permissions[flow_id] == ["read", "write", "execute", "delete", "deploy"]
+
+
+@pytest.mark.asyncio
+async def test_native_visibility_scope_matches_direct_enforcement_without_enumerating_scoped_rows(
+    collaboration_db: CollaborationDatabase,
+):
+    owner = _user("scope-owner")
+    actor = _user("scope-actor")
+    await _seed_users(collaboration_db, owner, actor)
+    workspace_id = uuid4()
+
+    async with collaboration_db.session() as session:
+        actor_project = Folder(name=f"actor-project-{uuid4()}", user_id=actor.id)
+        shared_project = Folder(name=f"shared-project-{uuid4()}", user_id=owner.id)
+        workspace_project = Folder(
+            name=f"workspace-project-{uuid4()}",
+            user_id=owner.id,
+            workspace_id=workspace_id,
+        )
+        hidden_project = Folder(name=f"hidden-project-{uuid4()}", user_id=owner.id)
+        inactive_team = AuthzTeam(
+            team_name=f"inactive-team-{uuid4()}",
+            adom_name=f"inactive-team-{uuid4()}",
+            is_active=False,
+            inactivation_reason="manual",
+        )
+        role = AuthzRole(name=f"workspace-reader-{uuid4()}", permissions=["flow:read"])
+        session.add_all([actor_project, shared_project, workspace_project, hidden_project, inactive_team, role])
+        await session.flush()
+        actor_project_flow = Flow(
+            name=f"actor-project-flow-{uuid4()}", user_id=owner.id, folder_id=actor_project.id, data={}
+        )
+        shared_project_flow = Flow(
+            name=f"shared-project-flow-{uuid4()}", user_id=owner.id, folder_id=shared_project.id, data={}
+        )
+        workspace_flow = Flow(
+            name=f"workspace-flow-{uuid4()}",
+            user_id=owner.id,
+            folder_id=workspace_project.id,
+            workspace_id=workspace_id,
+            data={},
+        )
+        direct_flow = Flow(name=f"direct-flow-{uuid4()}", user_id=owner.id, folder_id=hidden_project.id, data={})
+        hidden_flow = Flow(name=f"hidden-flow-{uuid4()}", user_id=owner.id, folder_id=hidden_project.id, data={})
+        inactive_team_flow = Flow(
+            name=f"inactive-team-flow-{uuid4()}", user_id=owner.id, folder_id=hidden_project.id, data={}
+        )
+        system_example_flow = Flow(name=f"system-example-{uuid4()}", user_id=None, folder_id=None, data={})
+        session.add_all(
+            [
+                actor_project_flow,
+                shared_project_flow,
+                workspace_flow,
+                direct_flow,
+                hidden_flow,
+                inactive_team_flow,
+                system_example_flow,
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                AuthzRoleAssignment(
+                    user_id=actor.id,
+                    role_id=role.id,
+                    domain_type="workspace",
+                    domain_id=workspace_id,
+                ),
+                AuthzTeamMember(team_id=inactive_team.id, user_id=actor.id, role=TeamRole.USER.value),
+                AuthzShare(
+                    resource_type="flow",
+                    resource_id=inactive_team_flow.id,
+                    scope=ShareScope.TEAM.value,
+                    target_id=inactive_team.id,
+                    permission_level=SharePermissionLevel.EXECUTE.value,
+                    created_by=owner.id,
+                ),
+            ]
+        )
+        await share_management.create_share(
+            session,
+            actor_id=owner.id,
+            resource_type="project",
+            resource_id=shared_project.id,
+            scope=ShareScope.USER.value,
+            target_id=actor.id,
+            permission_level=SharePermissionLevel.EXECUTE.value,
+        )
+        await share_management.create_share(
+            session,
+            actor_id=owner.id,
+            resource_type="flow",
+            resource_id=direct_flow.id,
+            scope=ShareScope.USER.value,
+            target_id=actor.id,
+            permission_level=SharePermissionLevel.EXECUTE.value,
+        )
+        # Deliberately overlap a direct grant with project inheritance. The
+        # compact scope may retain both sources, but it must make the same
+        # decision as direct enforcement.
+        await share_management.create_share(
+            session,
+            actor_id=owner.id,
+            resource_type="flow",
+            resource_id=shared_project_flow.id,
+            scope=ShareScope.USER.value,
+            target_id=actor.id,
+            permission_level=SharePermissionLevel.EXECUTE.value,
+        )
+        await session.commit()
+        rows = (
+            actor_project_flow,
+            shared_project_flow,
+            workspace_flow,
+            direct_flow,
+            hidden_flow,
+            inactive_team_flow,
+            system_example_flow,
+        )
+
+    scope = await collaboration_db.service.get_resource_visibility(
+        user_id=actor.id,
+        resource_type="flow",
+        act="read",
+    )
+    assert scope is not None
+    assert scope.all_resources is False
+    assert set(scope.resource_ids) == {direct_flow.id, shared_project_flow.id}
+    assert set(scope.project_ids) == {actor_project.id, shared_project.id}
+    assert scope.workspace_ids == (workspace_id,)
+    assert actor_project_flow.id not in scope.resource_ids
+    assert workspace_flow.id not in scope.resource_ids
+    assert hidden_flow.id not in scope.resource_ids
+    assert inactive_team_flow.id not in scope.resource_ids
+    assert system_example_flow.id not in scope.resource_ids
+
+    batch_decisions = await collaboration_db.service.batch_enforce(
+        user_id=actor.id,
+        domain="*",
+        requests=[(f"flow:{flow.id}", "read") for flow in rows],
+    )
+    for flow, directly_allowed in zip(rows, batch_decisions, strict=True):
+        prefilter_allowed = resource_visible_in_scope(
+            resource_id=flow.id,
+            workspace_id=flow.workspace_id,
+            project_id=flow.folder_id,
+            visibility=scope,
+        )
+        assert prefilter_allowed is directly_allowed
+
+    # Owning a project grants content operations on collaborator-owned flows,
+    # not deletion. The compact scope must remain action-exact as well.
+    delete_scope = await collaboration_db.service.get_resource_visibility(
+        user_id=actor.id,
+        resource_type="flow",
+        act="delete",
+    )
+    assert delete_scope is not None
+    assert actor_project.id not in delete_scope.project_ids
+    assert not resource_visible_in_scope(
+        resource_id=actor_project_flow.id,
+        workspace_id=actor_project_flow.workspace_id,
+        project_id=actor_project_flow.folder_id,
+        visibility=delete_scope,
+    )
+    assert not await collaboration_db.service.enforce(
+        user_id=actor.id,
+        domain="*",
+        obj=f"flow:{actor_project_flow.id}",
+        act="delete",
+    )
+
+
+@pytest.mark.asyncio
+async def test_superuser_bypass_still_requires_supported_actions_and_resolved_resources(
+    collaboration_db: CollaborationDatabase,
+):
+    platform = _user("validated-platform", is_superuser=True)
+    owner = _user("validated-owner")
+    await _seed_users(collaboration_db, platform, owner)
+
+    async with collaboration_db.session() as session:
+        project = Folder(name=f"validated-project-{uuid4()}", user_id=owner.id)
+        session.add(project)
+        await session.flush()
+        flow = Flow(name=f"validated-flow-{uuid4()}", user_id=owner.id, folder_id=project.id, data={})
+        session.add(flow)
+        await session.commit()
+        project_id = project.id
+        flow_id = flow.id
+
+    service = collaboration_db.service
+    missing_id = uuid4()
+    assert await service.enforce(user_id=platform.id, domain="*", obj=f"flow:{flow_id}", act="delete")
+    assert not await service.enforce(user_id=platform.id, domain="*", obj=f"flow:{missing_id}", act="read")
+    assert not await service.enforce(user_id=platform.id, domain="*", obj=f"flow:{flow_id}", act="unknown")
+    assert not await service.enforce(user_id=platform.id, domain="*", obj="unknown:*", act="read")
+    assert not await service.enforce(user_id=platform.id, domain="*", obj="flow:*", act="create")
+    assert not await service.enforce(
+        user_id=platform.id,
+        domain="*",
+        obj="flow:*",
+        act="create",
+        context={"intrinsic_creation": True, "folder_id": missing_id},
+    )
+    assert await service.enforce(
+        user_id=platform.id,
+        domain="*",
+        obj="flow:*",
+        act="create",
+        context={"intrinsic_creation": True, "folder_id": project_id},
+    )
+    assert not await service.enforce(
+        user_id=platform.id,
+        domain="*",
+        obj="share:*",
+        act="unknown",
+        context={"resource_type": "flow", "resource_id": flow_id},
+    )
+
+    decisions = await service.batch_enforce(
+        user_id=platform.id,
+        domain="*",
+        requests=[
+            (f"flow:{flow_id}", "read"),
+            (f"flow:{missing_id}", "read"),
+            (f"flow:{flow_id}", "unknown"),
+            ("unknown:*", "read"),
+        ],
+    )
+    assert decisions == [True, False, False, False]
+    assert (
+        await service.get_resource_visibility(
+            user_id=platform.id,
+            resource_type="flow",
+            act="unknown",
+        )
+        == ResourceVisibilityScope()
+    )
 
 
 @pytest.mark.asyncio

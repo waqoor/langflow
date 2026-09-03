@@ -96,6 +96,15 @@ async function login(
 ): Promise<AuthenticatedPage> {
   const context = await browser.newContext();
   const page = await context.newPage();
+  const identity = await authenticatePage(page, username, password);
+  return { context, page, identity };
+}
+
+async function authenticatePage(
+  page: Page,
+  username: string,
+  password = USER_PASSWORD,
+): Promise<{ id: string; username: string }> {
   await page.goto("/");
   await expect(page.getByRole("button", { name: TEXTS.signIn })).toBeVisible({
     timeout: TIMEOUTS.long,
@@ -119,7 +128,7 @@ async function login(
   await expect(page.getByTestId("user-profile-settings")).toBeVisible({
     timeout: TIMEOUTS.long,
   });
-  return { context, page, identity };
+  return identity;
 }
 
 async function createProject(page: Page, name: string): Promise<ApiProject> {
@@ -385,7 +394,7 @@ test.describe("native team and resource sharing", () => {
   test(
     "[AUTHZ-JOURNEY-01] Platform Admin creates a non-empty team and scoped roles control each member UI",
     { tag: ["@authz", "@api", "@database", "@workspace", "@release"] },
-    async () => {
+    async ({ page: a11yPage }) => {
       await adminPage.goto("/admin/teams");
       await expect(adminPage.getByTestId("admin-teams-page")).toBeVisible({
         timeout: TIMEOUTS.standard,
@@ -443,13 +452,18 @@ test.describe("native team and resource sharing", () => {
       await expect(teamUserPage.getByTestId("team-member-picker")).toHaveCount(
         0,
       );
+
+      await authenticatePage(a11yPage, "langflow", SUPERUSER_PASSWORD);
+      await a11yPage.goto("/admin/teams");
+      await expect(a11yPage.getByTestId("admin-teams-page")).toBeVisible();
+      await a11yPage.runA11yScan("authz-admin-teams");
     },
   );
 
   test(
     "[AUTHZ-JOURNEY-02] ordinary owner shares a workflow as Can use and recipient runs but cannot save",
     { tag: ["@authz", "@api", "@database", "@workspace", "@release"] },
-    async () => {
+    async ({ page: a11yPage }) => {
       const bootstrapProject = await createProject(
         ownerPage,
         `Owner bootstrap project ${runId}`,
@@ -535,13 +549,25 @@ test.describe("native team and resource sharing", () => {
       await expect(directPage.getByTestId(`share-flow-${flowId}`)).toHaveCount(
         0,
       );
+
+      await authenticatePage(a11yPage, direct.username);
+      await a11yPage.goto("/shared-with-me");
+      await expect(
+        a11yPage.getByText(runnableFlow.name, { exact: true }),
+      ).toBeVisible({ timeout: TIMEOUTS.standard });
+      await a11yPage.runA11yScan("authz-shared-with-me");
+      await a11yPage.goto(`/flow/${flowId}`);
+      await expect(
+        a11yPage.getByRole("application", { name: "Text Output node" }),
+      ).toBeVisible({ timeout: TIMEOUTS.standard });
+      await a11yPage.runA11yScan("authz-read-only-flow-editor");
     },
   );
 
   test(
     "[AUTHZ-JOURNEY-03] owner upgrades the same grant and recipient edits graph content visible to owner",
     { tag: ["@authz", "@api", "@database", "@workspace", "@release"] },
-    async () => {
+    async ({ page: a11yPage }) => {
       await ownerPage.goto(`/flow/${runnableFlow.id}`);
       await ownerPage.getByTestId("publish-button").click();
       await ownerPage.getByTestId(`share-flow-${runnableFlow.id}`).click();
@@ -588,13 +614,20 @@ test.describe("native team and resource sharing", () => {
           .getByRole("application", { name: "Text Input node" })
           .getByTestId("textarea_str_input_value"),
       ).toHaveValue(marker, { timeout: TIMEOUTS.standard });
+
+      await authenticatePage(a11yPage, owner.username);
+      await a11yPage.goto(`/flow/${runnableFlow.id}`);
+      await a11yPage.getByTestId("publish-button").click();
+      await a11yPage.getByTestId(`share-flow-${runnableFlow.id}`).click();
+      await expect(a11yPage.getByTestId("resource-share-dialog")).toBeVisible();
+      await a11yPage.runA11yScan("authz-resource-share-dialog");
     },
   );
 
   test(
     "[AUTHZ-JOURNEY-04] team project share covers existing, future, and collaborator-created workflows",
     { tag: ["@authz", "@api", "@database", "@workspace", "@release"] },
-    async () => {
+    async ({ page: a11yPage }) => {
       teamProject = await createProject(
         ownerPage,
         `Team inherited project ${runId}`,
@@ -649,6 +682,11 @@ test.describe("native team and resource sharing", () => {
         teamProjectMemberFlow.id,
       );
       expect(visibleToProjectOwner.user_id).toBe(teamUser.id);
+
+      await authenticatePage(a11yPage, teamAdmin.username);
+      await a11yPage.goto("/teams");
+      await expect(a11yPage.getByTestId("teams-page")).toBeVisible();
+      await a11yPage.runA11yScan("authz-member-teams");
     },
   );
 

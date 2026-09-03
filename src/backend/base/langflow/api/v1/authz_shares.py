@@ -24,6 +24,7 @@ from langflow.api.v1.schemas.authz_shares import (
     ShareUpdate,
 )
 from langflow.services.authorization import ShareAction, ensure_resource_share_administration
+from langflow.services.authorization.access_ceiling import external_access_allows
 from langflow.services.authorization.collaboration import (
     CollaborationCapabilities,
     CollaborationCapabilityError,
@@ -48,6 +49,7 @@ from langflow.services.authorization.share_management import (
 from langflow.services.authorization.share_management import create_share as create_share_transaction
 from langflow.services.authorization.share_management import delete_share as delete_share_transaction
 from langflow.services.authorization.share_management import update_share as update_share_transaction
+from langflow.services.authorization.team_management import actor_can_administer_platform
 from langflow.services.authorization.utils import audit_decision
 from langflow.services.database.lock_retry import run_with_lock_retry
 from langflow.services.database.models.auth import AuthzShare, AuthzTeam, AuthzTeamMember, ShareScope
@@ -59,7 +61,7 @@ from langflow.services.database.models.knowledge_base.model import KnowledgeBase
 from langflow.services.database.models.memory_base.model import MemoryBase
 from langflow.services.database.models.user.model import User
 from langflow.services.database.models.variable.model import Variable
-from langflow.services.deps import get_authorization_service, get_settings_service
+from langflow.services.deps import get_authorization_service
 
 router = APIRouter(prefix="/authz/shares", tags=["Authorization"])
 
@@ -274,7 +276,6 @@ async def _authorize_resource(
     try:
         authz = get_authorization_service()
         enforcing_cross_user_policy = await authz.is_enabled() and await authz.supports_cross_user_fetch()
-        superuser_bypass = bool(getattr(get_settings_service().auth_settings, "AUTHZ_SUPERUSER_BYPASS", True))
     except Exception as exc:
         raise _authorization_unavailable() from exc
 
@@ -287,7 +288,7 @@ async def _authorize_resource(
     if (
         not enforcing_cross_user_policy
         and current_user.id != resource.owner_id
-        and not (current_user.is_superuser is True and superuser_bypass)
+        and not actor_can_administer_platform(current_user)
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
 
@@ -410,11 +411,7 @@ def _owner_predicate(user_id: UUID) -> ColumnElement[bool]:
 
 
 async def _management_predicate(session: DbSession, user: User) -> ColumnElement[bool] | None:
-    try:
-        superuser_bypass = bool(getattr(get_settings_service().auth_settings, "AUTHZ_SUPERUSER_BYPASS", True))
-    except Exception as exc:
-        raise _authorization_unavailable() from exc
-    if user.is_superuser is True and superuser_bypass:
+    if actor_can_administer_platform(user):
         return true()
 
     scopes = await share_management_scopes(session, user_id=user.id, action="read")
@@ -620,16 +617,12 @@ async def get_share_summary(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
     if subject is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
-    try:
-        superuser_bypass = bool(getattr(get_settings_service().auth_settings, "AUTHZ_SUPERUSER_BYPASS", True))
-    except Exception as exc:
-        raise _authorization_unavailable() from exc
-    can_manage = await user_can_manage_resource_shares(
+    can_manage = external_access_allows(ShareAction.CREATE.value) and await user_can_manage_resource_shares(
         session,
         user=actor,
         resource=resource,
-        share_action="read",
-        superuser_bypass=superuser_bypass,
+        share_action=ShareAction.CREATE.value,
+        superuser_bypass=actor_can_administer_platform(actor),
     )
     if subject_id != actor.id and not can_manage:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
@@ -707,16 +700,12 @@ async def get_share(
         actor = await load_active_user(session, current_user.id)
         if actor is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
-        try:
-            superuser_bypass = bool(getattr(get_settings_service().auth_settings, "AUTHZ_SUPERUSER_BYPASS", True))
-        except Exception as exc:
-            raise _authorization_unavailable() from exc
         if not await user_can_manage_resource_shares(
             session,
             user=actor,
             resource=resource,
-            share_action="read",
-            superuser_bypass=superuser_bypass,
+            share_action=ShareAction.READ.value,
+            superuser_bypass=actor_can_administer_platform(actor),
         ):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
     serialized = (await _serialize_shares(session, [row]))[0]

@@ -678,7 +678,7 @@ async def resource_visibility_scope(
         elif resource_type == "flow" and action in project_flow_actions(share.permission_level):
             project_ids.add(share.resource_id)
 
-    if resource_type == "flow":
+    if resource_type == "flow" and action in project_flow_actions("admin"):
         owned_project_ids = (
             await session.exec(select(Folder.id).where(Folder.user_id == user_id).order_by(col(Folder.id)))
         ).all()

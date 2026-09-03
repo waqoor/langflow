@@ -53,6 +53,7 @@ function useDebouncedValue(value: string, delay = 300): string {
 }
 
 const permissionOptions: ShareDialogPermission[] = ["execute", "write"];
+const directGrantPageSize = 50;
 
 function permissionLabelKey(permission: ShareDialogPermission) {
   return permission === "execute"
@@ -64,6 +65,18 @@ function permissionDescriptionKey(permission: ShareDialogPermission) {
   return permission === "execute"
     ? "sharing.mode.use.description"
     : "sharing.mode.edit.description";
+}
+
+function preservedPermissionLabelKey(permission: "read" | "admin") {
+  return permission === "read"
+    ? "sharing.mode.read.label"
+    : "sharing.mode.admin.label";
+}
+
+function preservedPermissionDescriptionKey(permission: "read" | "admin") {
+  return permission === "read"
+    ? "sharing.mode.read.description"
+    : "sharing.mode.admin.description";
 }
 
 function GrantRow({
@@ -85,9 +98,55 @@ function GrantRow({
     onError: (requestError) =>
       setError(extractApiErrorMessages(requestError).join(" ")),
   });
-  const currentPermission: ShareDialogPermission =
-    grant.permission_level === "write" ? "write" : "execute";
+  const currentPermission = permissionOptions.includes(
+    grant.permission_level as ShareDialogPermission,
+  )
+    ? (grant.permission_level as ShareDialogPermission)
+    : null;
+  const preservedPermission =
+    grant.permission_level === "read" || grant.permission_level === "admin"
+      ? grant.permission_level
+      : null;
   const target = grant.target_name ?? t("sharing.unknownRecipient");
+
+  const updatePermission = (value: string) => {
+    const permission = value as ShareDialogPermission;
+    if (permission === currentPermission) return;
+    setError(null);
+    updateShare.mutate({
+      shareId: grant.id,
+      revision: grant.revision,
+      resourceType,
+      resourceId,
+      permission,
+    });
+  };
+
+  const permissionPicker = (
+    <RadioGroup
+      className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2"
+      value={currentPermission ?? ""}
+      aria-label={t(
+        currentPermission
+          ? "sharing.permission.for"
+          : "sharing.convertPermission.for",
+        { target },
+      )}
+      data-testid={`share-grant-permission-${grant.id}`}
+      disabled={updateShare.isPending || deleteShare.isPending}
+      onValueChange={updatePermission}
+    >
+      {permissionOptions.map((permission) => (
+        <Label
+          key={permission}
+          className="flex cursor-pointer items-start gap-2 rounded-md border p-2 text-xs"
+        >
+          <RadioGroupItem value={permission} />
+          <span>{t(permissionLabelKey(permission))}</span>
+        </Label>
+      ))}
+    </RadioGroup>
+  );
 
   return (
     <li
@@ -123,34 +182,27 @@ function GrantRow({
           {t("sharing.remove")}
         </Button>
       </div>
-      <RadioGroup
-        className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2"
-        value={currentPermission}
-        aria-label={t("sharing.permission.for", { target })}
-        disabled={updateShare.isPending || deleteShare.isPending}
-        onValueChange={(value) => {
-          const permission = value as ShareDialogPermission;
-          if (permission === currentPermission) return;
-          setError(null);
-          updateShare.mutate({
-            shareId: grant.id,
-            revision: grant.revision,
-            resourceType,
-            resourceId,
-            permission,
-          });
-        }}
-      >
-        {permissionOptions.map((permission) => (
-          <Label
-            key={permission}
-            className="flex cursor-pointer items-start gap-2 rounded-md border p-2 text-xs"
+      {currentPermission ? (
+        permissionPicker
+      ) : preservedPermission ? (
+        <>
+          <div
+            className="mt-3 rounded-md border bg-muted/30 p-2"
+            data-testid={`preserved-share-permission-${grant.id}`}
           >
-            <RadioGroupItem value={permission} />
-            <span>{t(permissionLabelKey(permission))}</span>
-          </Label>
-        ))}
-      </RadioGroup>
+            <div className="text-xs font-medium">
+              {t(preservedPermissionLabelKey(preservedPermission))}
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t(preservedPermissionDescriptionKey(preservedPermission))}
+            </p>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t("sharing.convertPermission")}
+          </p>
+          {permissionPicker}
+        </>
+      ) : null}
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
     </li>
   );
@@ -172,11 +224,17 @@ export function ResourceShareDialog({
     useState<AuthorizationRecipient | null>(null);
   const [permission, setPermission] =
     useState<ShareDialogPermission>("execute");
+  const [grantOffset, setGrantOffset] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const debouncedSearch = useDebouncedValue(search);
   const capabilities = useGetAuthorizationCapabilities({ enabled: open });
   const summary = useGetShareSummary(
-    { resourceType, resourceId },
+    {
+      resourceType,
+      resourceId,
+      limit: directGrantPageSize,
+      offset: grantOffset,
+    },
     { enabled: open },
   );
   const recipients = useSearchAuthorizationRecipients(
@@ -203,6 +261,10 @@ export function ResourceShareDialog({
     setSelectedRecipient(null);
     setSearch("");
   }, [recipientType]);
+
+  useEffect(() => {
+    setGrantOffset(0);
+  }, [open, resourceId, resourceType]);
 
   const contractReady = Boolean(
     capabilities.data?.enforcement_active &&
@@ -431,6 +493,37 @@ export function ResourceShareDialog({
                 <p className="text-sm text-muted-foreground">
                   {t("sharing.noGrants")}
                 </p>
+              )}
+              {(grantOffset > 0 || summary.data?.has_more) && (
+                <nav
+                  className="flex items-center justify-end gap-2"
+                  aria-label={t("sharing.grantsPagination")}
+                >
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={grantOffset === 0 || summary.isFetching}
+                    onClick={() =>
+                      setGrantOffset((offset) =>
+                        Math.max(0, offset - directGrantPageSize),
+                      )
+                    }
+                  >
+                    {t("teams.previous")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!summary.data?.has_more || summary.isFetching}
+                    onClick={() =>
+                      setGrantOffset((offset) => offset + directGrantPageSize)
+                    }
+                  >
+                    {t("teams.next")}
+                  </Button>
+                </nav>
               )}
               {summary.data?.inherited_from_project && (
                 <p className="text-xs text-muted-foreground">

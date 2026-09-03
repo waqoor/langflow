@@ -17,7 +17,7 @@ from sqlmodel.sql.expression import SelectOfScalar
 from langflow.api.utils import CurrentActiveUser, DbSession
 from langflow.api.v1.schemas import PasswordResetRequest, UsersResponse
 from langflow.initial_setup.setup import get_or_create_default_folder
-from langflow.services.auth.utils import get_current_active_superuser, get_current_user_optional
+from langflow.services.auth.utils import get_current_user_optional
 from langflow.services.authorization.audit import (
     AUDIT_EVENT_ACCESS,
     AUDIT_EVENT_MUTATION,
@@ -34,6 +34,7 @@ from langflow.services.authorization.lifecycle import (
 )
 from langflow.services.authorization.team_management import (
     UserTeamLifecycleResult,
+    actor_can_administer_platform,
     apply_user_team_lifecycle,
 )
 from langflow.services.database.models.user.crud import update_user
@@ -41,6 +42,13 @@ from langflow.services.database.models.user.model import User, UserCreate, UserR
 from langflow.services.deps import get_auth_service, get_authorization_service, get_settings_service
 
 router = APIRouter(tags=["Users"], prefix="/users")
+
+
+async def _get_current_platform_admin(current_user: CurrentActiveUser) -> User:
+    """Require effective platform authority for user-directory operations."""
+    if not actor_can_administer_platform(current_user):
+        raise HTTPException(status_code=403, detail="Platform administrator access required")
+    return current_user
 
 
 async def _audit_deny(
@@ -73,21 +81,21 @@ async def add_user(
     * Public sign up (unauthenticated). Allowed only when public registration is
       enabled for the deployment, i.e. AUTO_LOGIN is off (multi-user mode) and
       ENABLE_SIGNUP is True.
-    * Admin "add user" (authenticated active superuser). Always allowed,
+    * Admin "add user" (authenticated Platform Admin). Always allowed,
       regardless of the sign up settings, so disabling public sign up does not
-      break superuser-driven user creation.
+      break administrator-driven user creation.
 
     User activation is controlled by the NEW_USER_IS_ACTIVE setting.
     """
     settings_service = get_settings_service()
     auth_settings = settings_service.auth_settings
-    # An authenticated active superuser (the admin "add user" flow) may always
+    # An authenticated Platform Admin (the admin "add user" flow) may always
     # create users. For every other caller this endpoint is effectively
     # unauthenticated, so refuse it unless public sign up is intended for this
     # deployment. get_current_user_optional returns None for credential-less
     # requests, so the anonymous path can never be promoted to superuser.
-    is_superuser_caller = current_user is not None and current_user.is_active and current_user.is_superuser
-    if not is_superuser_caller and (auth_settings.AUTO_LOGIN or not auth_settings.ENABLE_SIGNUP):
+    is_platform_admin_caller = current_user is not None and actor_can_administer_platform(current_user)
+    if not is_platform_admin_caller and (auth_settings.AUTO_LOGIN or not auth_settings.ENABLE_SIGNUP):
         await _audit_deny(
             user_id=current_user.id if current_user is not None else None,
             action="user:create",
@@ -148,7 +156,7 @@ async def add_user(
     )
     audit_details = {
         "event": AUDIT_EVENT_MUTATION,
-        "created_by": "admin" if is_superuser_caller else "signup",
+        "created_by": "admin" if is_platform_admin_caller else "signup",
     }
     try:
         await stage_identity_mutation(authorization_service, session, lifecycle_mutation)
@@ -185,7 +193,7 @@ async def read_current_user(
     return current_user
 
 
-@router.get("/", dependencies=[Depends(get_current_active_superuser)])
+@router.get("/", dependencies=[Depends(_get_current_platform_admin)])
 async def read_all_users(
     *,
     skip: int = 0,
@@ -221,6 +229,7 @@ async def patch_user(
 ) -> User:
     """Update an existing user's data."""
     update_password = bool(user_update.password)
+    is_platform_admin = actor_can_administer_platform(user)
 
     # Prevent users from deactivating their own account to avoid lockout
     if user.id == user_id and user_update.is_active is False:
@@ -233,7 +242,7 @@ async def patch_user(
         )
         raise HTTPException(status_code=403, detail="You can't deactivate your own user account")
 
-    if not user.is_superuser and user_update.is_superuser:
+    if not is_platform_admin and user_update.is_superuser:
         await _audit_deny(
             user_id=user.id,
             action="user:update",
@@ -243,7 +252,7 @@ async def patch_user(
         )
         raise HTTPException(status_code=403, detail="Permission denied")
 
-    if not user.is_superuser and user.id != user_id:
+    if not is_platform_admin and user.id != user_id:
         await _audit_deny(
             user_id=user.id,
             action="user:update",
@@ -253,7 +262,7 @@ async def patch_user(
         )
         raise HTTPException(status_code=403, detail="Permission denied")
     if update_password:
-        if not user.is_superuser:
+        if not is_platform_admin:
             await _audit_deny(
                 user_id=user.id,
                 action="user:update",
@@ -434,18 +443,19 @@ async def delete_user(
     session: DbSession,
 ) -> dict:
     """Delete a user from the database."""
-    if current_user.id == user_id:
+    actor_user_id = current_user.id
+    if actor_user_id == user_id:
         await _audit_deny(
-            user_id=current_user.id,
+            user_id=actor_user_id,
             action="user:delete",
             obj=f"user:{user_id}",
             status_code=400,
             reason="self_deletion_forbidden",
         )
         raise HTTPException(status_code=400, detail="You can't delete your own user account")
-    if not current_user.is_superuser:
+    if not actor_can_administer_platform(current_user):
         await _audit_deny(
-            user_id=current_user.id,
+            user_id=actor_user_id,
             action="user:delete",
             obj=f"user:{user_id}",
             status_code=403,
@@ -467,7 +477,7 @@ async def delete_user(
     user_db = (await session.exec(stmt)).first()
     if not user_db:
         await _audit_deny(
-            user_id=current_user.id,
+            user_id=actor_user_id,
             action="user:delete",
             obj=f"user:{user_id}",
             status_code=404,
@@ -479,7 +489,7 @@ async def delete_user(
     if impact.exists:
         await session.rollback()
         await _audit_deny(
-            user_id=current_user.id,
+            user_id=actor_user_id,
             action="user:delete",
             obj=f"user:{user_id}",
             status_code=409,
@@ -490,7 +500,7 @@ async def delete_user(
     lifecycle_mutation = AuthorizationMutation(
         kind=AuthorizationMutationKind.USER_DELETED,
         entity_id=user_db.id,
-        actor_user_id=current_user.id,
+        actor_user_id=actor_user_id,
         affected_user_ids=(user_db.id,),
         policy_relevant_fields=("is_active", "is_superuser"),
         user_before=UserAuthorizationSnapshot(
@@ -507,7 +517,7 @@ async def delete_user(
     try:
         team_lifecycle = await apply_user_team_lifecycle(
             session,
-            actor_id=current_user.id,
+            actor_id=actor_user_id,
             user_id=user_id,
             remove_memberships=True,
         )
@@ -526,7 +536,7 @@ async def delete_user(
         }
         audit_staged = stage_audit_decision(
             session=session,
-            user_id=current_user.id,
+            user_id=actor_user_id,
             action="user:delete",
             obj=f"user:{user_id}",
             result="allow",
@@ -542,7 +552,7 @@ async def delete_user(
     await safe_share_rules_removed(authorization_service, team_lifecycle.removed_share_snapshots)
     if not audit_staged:
         await audit_decision(
-            user_id=current_user.id,
+            user_id=actor_user_id,
             action="user:delete",
             obj=f"user:{user_id}",
             result="allow",

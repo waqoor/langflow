@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
+from langflow.services.authorization.access_ceiling import ExternalAccessContext, set_current_external_access_context
 from sqlalchemy.exc import IntegrityError
 
 # --- shared fakes ----------------------------------------------------- #
@@ -489,6 +490,35 @@ async def test_create_role_requires_superuser(stub_authz):
     assert excinfo.value.status_code == 403
     assert session.added == []
     assert session.committed == 0
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_routes_honor_external_credential_ceiling(stub_authz):
+    from langflow.api.v1 import authz_audit, authz_role_assignments, authz_roles
+
+    stub_authz()
+    user = _make_user(is_superuser=True)
+    set_current_external_access_context(
+        ExternalAccessContext(provider="test-idp", subject="platform-user", level="editor")
+    )
+    try:
+        for gate, action, obj in (
+            (authz_roles._require_superuser, "role:create", "role:*"),
+            (
+                authz_role_assignments._require_superuser,
+                "role_assignment:create",
+                "role_assignment:*",
+            ),
+        ):
+            with pytest.raises(HTTPException) as excinfo:
+                await gate(user, action=action, obj=obj)
+            assert excinfo.value.status_code == 403
+
+        with pytest.raises(HTTPException) as excinfo:
+            await authz_audit._get_current_platform_admin(user)
+        assert excinfo.value.status_code == 403
+    finally:
+        set_current_external_access_context(None)
 
 
 @pytest.mark.asyncio

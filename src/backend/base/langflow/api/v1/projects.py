@@ -17,7 +17,7 @@ from fastapi import (
     status,
 )
 from fastapi.encoders import jsonable_encoder
-from fastapi_pagination import Params
+from fastapi_pagination import Page, Params
 from fastapi_pagination.ext.sqlmodel import apaginate
 from lfx.log.logger import logger
 from lfx.services.mcp_composer.service import MCPComposerService
@@ -52,11 +52,12 @@ from langflow.services.auth.mcp_encryption import decrypt_auth_settings, encrypt
 from langflow.services.authorization import (
     FlowAction,
     ProjectAction,
+    apply_owned_or_visible_scope_prefilter,
     ensure_flow_permission,
     ensure_project_permission,
     filter_visible_resources,
     resource_visible_in_scope,
-    restrict_to_owned_or_visible_scope,
+    should_apply_owner_override,
     visible_scope_prefilter,
 )
 from langflow.services.authorization.collaboration import CollaborationCapabilityError
@@ -73,6 +74,7 @@ from langflow.services.authorization.fetch import (
 )
 from langflow.services.authorization.lifecycle import safe_share_rules_removed
 from langflow.services.authorization.share_management import delete_resource_shares
+from langflow.services.authorization.team_management import actor_can_administer_platform
 from langflow.services.authorization.utils import _resolve_authz_domain
 from langflow.services.database.lock_retry import (
     is_database_lock_error,
@@ -322,7 +324,7 @@ async def _new_project(
                 raise deny_to_404(exc, detail="Flow not found") from exc
             if row.user_id is None:
                 raise HTTPException(status_code=403, detail="System-managed flows cannot be moved.")
-            if row.user_id != current_user.id and current_user.is_superuser is not True:
+            if row.user_id != current_user.id and not actor_can_administer_platform(current_user):
                 raise HTTPException(status_code=403, detail="Only a workflow owner may move it into a project.")
             expected = project.expected_edit_revision.get(row.id)
             _check_flow_revision(
@@ -395,12 +397,14 @@ async def create_project(
         raise HTTPException(status_code=500, detail=sanitize_database_error(e, PROJECT_CREATE_FAILED)) from e
 
 
-@router.get("/", response_model=list[FolderListRead], status_code=200)
+@router.get("/", response_model=list[FolderListRead] | Page[FolderListRead], status_code=200)
 async def read_projects(
     *,
     session: DbSession,
     current_user: CurrentActiveUser,
     shared_only: bool = False,
+    get_all: bool = True,
+    params: Annotated[Params | None, Depends(custom_params)] = None,
 ):
     try:
         # Rows the caller owns outright. The legacy owner-scoped fallback also
@@ -419,7 +423,7 @@ async def read_projects(
         # OSS pass-through returns None → owner-scoped query + filter unchanged.
         visibility_scope = await visible_scope_prefilter(current_user, resource_type="project", act=ProjectAction.READ)
         if visibility_scope is not None:
-            stmt = restrict_to_owned_or_visible_scope(
+            stmt = await apply_owned_or_visible_scope_prefilter(
                 select(Folder),
                 id_column=Folder.id,
                 owner_clause=owned_clause,
@@ -429,12 +433,22 @@ async def read_projects(
             )
         else:
             stmt = select(Folder).where(or_(owned_clause, Folder.user_id == None))  # noqa: E711
+        # Exclude the reserved ownerless starter row before pagination so both
+        # page items and totals describe the same authorized resource set.
+        stmt = stmt.where(or_(Folder.name != STARTER_FOLDER_NAME, Folder.user_id.is_not(None)))
         if shared_only:
             stmt = stmt.where(Folder.user_id.is_not(None), Folder.user_id != current_user.id)
-        projects = (await session.exec(stmt)).all()
-        projects = [
-            project for project in projects if not (project.name == STARTER_FOLDER_NAME and project.user_id is None)
-        ]
+
+        # Shared-resource discovery must be bounded and stable across pages. The
+        # default remains the historical list response for existing callers;
+        # consumers opt into the standard Page envelope with ``get_all=false``.
+        page: Page[Folder] | None = None
+        if get_all:
+            projects = (await session.exec(stmt)).all()
+        else:
+            stmt = stmt.order_by(Folder.name != DEFAULT_FOLDER_NAME, Folder.name, Folder.id)
+            page = await apaginate(session, stmt, params=params or Params())
+            projects = list(page.items)
         # When no DB prefilter is available (OSS pass-through), drop projects the
         # user can't read in memory. ``domain_extractor`` groups requests by
         # concrete project so each batch is evaluated against the same policy
@@ -460,7 +474,7 @@ async def read_projects(
 
         # Convert while the session is active so owner-qualified project lists
         # do not trigger lazy loads after the request-scoped session closes.
-        return [
+        project_reads = [
             FolderListRead.model_validate(
                 project,
                 from_attributes=True,
@@ -472,6 +486,10 @@ async def read_projects(
             )
             for project in sorted_projects
         ]
+        if page is not None:
+            page.items = project_reads
+            return page
+        return project_reads  # noqa: TRY300 - final return inside try matches this handler's established style
     except HTTPException:
         raise
     except Exception as e:
@@ -564,7 +582,7 @@ async def read_project(
                 # Shared project with a concrete prefilter: widen to
                 # (owned ⊕ visible) at the DB layer so ``page.total`` reflects the
                 # prefilter and no per-row enforce runs.
-                stmt = restrict_to_owned_or_visible_scope(
+                stmt = await apply_owned_or_visible_scope_prefilter(
                     stmt,
                     id_column=Flow.id,
                     owner_clause=Flow.user_id == current_user.id,
@@ -625,10 +643,11 @@ async def read_project(
                 # by set membership — the same union as the SQL prefilter, applied
                 # in memory because the relationship is already materialized
                 # (still no per-row enforce, so no N+1).
+                owner_override_allowed = await should_apply_owner_override()
                 visible_flows = [
                     flow
                     for flow in project.flows
-                    if flow.user_id == current_user.id
+                    if (owner_override_allowed and flow.user_id == current_user.id)
                     or resource_visible_in_scope(
                         resource_id=flow.id,
                         workspace_id=project.workspace_id,
@@ -702,7 +721,7 @@ async def _apply_project_update(
     )
     _check_project_revision(existing_project, if_match=if_match, required=precondition_required)
 
-    owner_managed = existing_project.user_id == current_user.id or current_user.is_superuser
+    owner_managed = existing_project.user_id == current_user.id or actor_can_administer_platform(current_user)
     protected_changes: list[str] = []
     if "auth_settings" in project.model_fields_set and project.auth_settings != existing_project.auth_settings:
         protected_changes.append("auth_settings")
@@ -884,7 +903,7 @@ async def _apply_project_update(
                 raise deny_to_404(exc, detail="Flow not found") from exc
             if row.user_id is None:
                 raise HTTPException(status_code=403, detail="System-managed flows cannot be moved.")
-            if row.user_id != current_user.id and current_user.is_superuser is not True:
+            if row.user_id != current_user.id and not actor_can_administer_platform(current_user):
                 raise HTTPException(status_code=403, detail="Only a workflow owner may change its project membership.")
             expected = project.expected_edit_revision.get(row.id)
             _check_flow_revision(

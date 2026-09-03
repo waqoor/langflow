@@ -14,6 +14,7 @@ from lfx.services.authorization.base import (
 )
 from sqlmodel import select
 
+from langflow.services.authorization.actions import ShareAction
 from langflow.services.authorization.repository import (
     ResourceRecord,
     all_resource_ids,
@@ -24,6 +25,7 @@ from langflow.services.authorization.repository import (
     load_active_user,
     load_resource,
     resolve_resources,
+    resource_visibility_scope,
     supported_actions,
     user_can_manage_resource_shares,
 )
@@ -107,6 +109,17 @@ class LangflowAuthorizationService(BaseAuthorizationService):
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _canonical_voice_owner(context: dict[str, Any]) -> UUID | None:
+        """Validate the server-resolved owner used for provider-backed voices."""
+        raw_owner_id = context.get("voice_user_id")
+        if raw_owner_id is None:
+            return None
+        try:
+            return UUID(str(raw_owner_id))
+        except (TypeError, ValueError):
+            return None
+
     async def _virtual_creation_resource(
         self,
         session: AsyncSession,
@@ -157,6 +170,8 @@ class LangflowAuthorizationService(BaseAuthorizationService):
         share_action: str,
         context: dict[str, Any],
     ) -> bool:
+        if share_action not in {action.value for action in ShareAction}:
+            return False
         raw_resource_type = context.get("resource_type")
         raw_resource_id = context.get("resource_id")
         if not isinstance(raw_resource_type, str) or raw_resource_id is None:
@@ -210,8 +225,6 @@ class LangflowAuthorizationService(BaseAuthorizationService):
         user = await load_active_user(session, user_id)
         if user is None:
             return False
-        if user.is_superuser is True and self._superuser_bypass():
-            return True
 
         if resource_type == "share":
             return await self._enforce_share_operation(
@@ -230,7 +243,12 @@ class LangflowAuthorizationService(BaseAuthorizationService):
             # owner, so this is an owner-scoped collection read rather than an
             # unqualified wildcard grant.
             if resource_type == "voice":
-                return act == "read" and context.get("voice_user_id") == user_id
+                voice_owner_id = self._canonical_voice_owner(context)
+                if voice_owner_id is None:
+                    return False
+                if user.is_superuser is True and self._superuser_bypass():
+                    return True
+                return act == "read" and voice_owner_id == user_id
             if act != "create":
                 return False
             resource = await self._virtual_creation_resource(
@@ -241,6 +259,8 @@ class LangflowAuthorizationService(BaseAuthorizationService):
             )
             if resource is None:
                 return False
+            if user.is_superuser is True and self._superuser_bypass():
+                return True
             if resource_type not in {"flow", "deployment"}:
                 return True
         else:
@@ -252,7 +272,17 @@ class LangflowAuthorizationService(BaseAuthorizationService):
             if resource is None:
                 # Voice IDs are provider data rather than Langflow rows. The
                 # guarded route supplies only its canonical credential owner.
-                return resource_type == "voice" and context.get("voice_user_id") == user_id and act == "read"
+                if resource_type != "voice":
+                    return False
+                voice_owner_id = self._canonical_voice_owner(context)
+                if voice_owner_id is None:
+                    return False
+                if user.is_superuser is True and self._superuser_bypass():
+                    return True
+                return voice_owner_id == user_id and act == "read"
+
+        if user.is_superuser is True and self._superuser_bypass():
+            return True
 
         return act in (await effective_access(session, user_id=user_id, resource=resource)).actions
 
@@ -298,8 +328,7 @@ class LangflowAuthorizationService(BaseAuthorizationService):
             user = await load_active_user(session, user_id)
             if user is None:
                 return [False] * len(requests)
-            if user.is_superuser is True and self._superuser_bypass():
-                return [True] * len(requests)
+            superuser_bypass = user.is_superuser is True and self._superuser_bypass()
 
             parsed = [self._parse_object(obj) for obj, _act in requests]
             ids_by_type: dict[str, list[UUID]] = {}
@@ -319,10 +348,14 @@ class LangflowAuthorizationService(BaseAuthorizationService):
                     resource_ids=resource_ids,
                 )
                 canonical.update({(resource_type, resource_id): row for resource_id, row in resolved.items()})
-            access = await effective_access_many(
-                session,
-                user_id=user_id,
-                resources=tuple(canonical.values()),
+            access = (
+                {}
+                if superuser_bypass
+                else await effective_access_many(
+                    session,
+                    user_id=user_id,
+                    resources=tuple(canonical.values()),
+                )
             )
 
             decisions: list[bool] = []
@@ -346,7 +379,11 @@ class LangflowAuthorizationService(BaseAuthorizationService):
                     continue
                 if resource_id is None:
                     if resource_type == "voice":
-                        decisions.append(act == "read" and (context or {}).get("voice_user_id") == user_id)
+                        voice_owner_id = self._canonical_voice_owner(dict(context or {}))
+                        decisions.append(
+                            voice_owner_id is not None
+                            and (superuser_bypass or (act == "read" and voice_owner_id == user_id))
+                        )
                         continue
                     if act != "create":
                         decisions.append(False)
@@ -359,6 +396,8 @@ class LangflowAuthorizationService(BaseAuthorizationService):
                     )
                     if resource is None:
                         decisions.append(False)
+                    elif superuser_bypass:
+                        decisions.append(True)
                     elif resource_type in {"flow", "deployment"}:
                         decisions.append(
                             act
@@ -375,11 +414,14 @@ class LangflowAuthorizationService(BaseAuthorizationService):
                     continue
                 resource = canonical.get((resource_type, resource_id))
                 if resource is None:
+                    voice_owner_id = self._canonical_voice_owner(dict(context or {}))
                     decisions.append(
-                        resource_type == "voice" and (context or {}).get("voice_user_id") == user_id and act == "read"
+                        resource_type == "voice"
+                        and voice_owner_id is not None
+                        and (superuser_bypass or (voice_owner_id == user_id and act == "read"))
                     )
                     continue
-                decisions.append(act in access[(resource_type, resource_id)].actions)
+                decisions.append(superuser_bypass or act in access[(resource_type, resource_id)].actions)
             return decisions
 
     async def get_effective_permissions(
@@ -431,6 +473,8 @@ class LangflowAuthorizationService(BaseAuthorizationService):
     ) -> list[UUID] | None:
         if not await self.is_enabled():
             return None
+        if act not in supported_actions(resource_type):
+            return []
         from lfx.services.deps import session_scope_readonly
 
         async with session_scope_readonly() as raw_session:
@@ -454,29 +498,30 @@ class LangflowAuthorizationService(BaseAuthorizationService):
         *,
         user_id: UUID,
         resource_type: str,
-        domain: str = "*",
+        domain: str = "*",  # noqa: ARG002 - scopes are resolved from canonical rows
         act: str = "read",
-        context: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,  # noqa: ARG002
     ) -> ResourceVisibilityScope | None:
-        if await self.is_enabled():
-            from lfx.services.deps import session_scope_readonly
-
-            async with session_scope_readonly() as raw_session:
-                session = cast("AsyncSession", raw_session)
-                user = await load_active_user(session, user_id)
-                if user is not None and user.is_superuser is True and self._superuser_bypass():
-                    return ResourceVisibilityScope(all_resources=True)
-
-        visible = await self.list_visible_resource_ids(
-            user_id=user_id,
-            resource_type=resource_type,
-            domain=domain,
-            act=act,
-            context=context,
-        )
-        if visible is None:
+        if not await self.is_enabled():
             return None
-        return ResourceVisibilityScope(resource_ids=tuple(visible))
+        if act not in supported_actions(resource_type):
+            return ResourceVisibilityScope()
+
+        from lfx.services.deps import session_scope_readonly
+
+        async with session_scope_readonly() as raw_session:
+            session = cast("AsyncSession", raw_session)
+            user = await load_active_user(session, user_id)
+            if user is None:
+                return ResourceVisibilityScope()
+            if user.is_superuser is True and self._superuser_bypass():
+                return ResourceVisibilityScope(all_resources=True)
+            return await resource_visibility_scope(
+                session,
+                user_id=user_id,
+                resource_type=resource_type,
+                action=act,
+            )
 
     async def resolve_public_tenant(self, request: PublicAuthorizationRequest) -> str | None:
         """Use only the already server-resolved domain hint as a local tenant."""

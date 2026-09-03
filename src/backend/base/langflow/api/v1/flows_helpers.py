@@ -35,6 +35,7 @@ from langflow.services.authorization.concurrency import (
     require_revision_precondition,
 )
 from langflow.services.authorization.fetch import authorized_or_owner_scoped
+from langflow.services.authorization.team_management import actor_can_administer_platform
 from langflow.services.database.models.base import orjson_dumps
 from langflow.services.database.models.deployment.orm_guards import ensure_flow_move_allowed
 from langflow.services.database.models.flow.guards import (
@@ -626,7 +627,7 @@ async def _update_existing_flow(
     actor_user_id = current_user.id
     owner_user_id: UUID = existing_flow.user_id
     is_owner_edit = owner_user_id == actor_user_id
-    can_manage_owner_fields = is_owner_edit or current_user.is_superuser is True
+    can_manage_owner_fields = is_owner_edit or actor_can_administer_platform(current_user)
     existing_folder_id = existing_flow.folder_id
 
     if flow.user_id is not None and flow.user_id != owner_user_id:

@@ -70,11 +70,11 @@ export function TeamManagement({ adminMode }: { adminMode: boolean }) {
   }
 
   return (
-    <div
+    <main
       className="flex h-full min-h-0 flex-col gap-5 p-6"
       data-testid={adminMode ? "admin-teams-page" : "teams-page"}
     >
-      <header className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">
             {t(adminMode ? "teams.title.admin" : "teams.title.member")}
@@ -88,7 +88,7 @@ export function TeamManagement({ adminMode }: { adminMode: boolean }) {
             {t("teams.create")}
           </Button>
         )}
-      </header>
+      </div>
       <div className="grid min-h-0 flex-1 gap-5 lg:grid-cols-[minmax(18rem,0.8fr)_minmax(26rem,1.7fr)]">
         <section
           className="flex min-h-0 flex-col rounded-xl border bg-background"
@@ -202,6 +202,6 @@ export function TeamManagement({ adminMode }: { adminMode: boolean }) {
         onOpenChange={setCreateOpen}
         onCreated={setSelectedTeamId}
       />
-    </div>
+    </main>
   );
 }

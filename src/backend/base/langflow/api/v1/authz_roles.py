@@ -21,6 +21,7 @@ from langflow.services.authorization.lifecycle import (
     safe_identity_mutation_committed,
     stage_identity_mutation,
 )
+from langflow.services.authorization.team_management import actor_can_administer_platform
 from langflow.services.authorization.utils import audit_decision
 from langflow.services.database.models.auth import AuthzRole, AuthzRoleAssignment
 from langflow.services.deps import get_authorization_service
@@ -68,8 +69,8 @@ def _is_role_name_conflict(exc: IntegrityError) -> bool:
 
 
 async def _require_superuser(user, *, action: str, obj: str) -> None:
-    """Superuser-only gate. Role admin is an operations action."""
-    if not getattr(user, "is_superuser", False):
+    """Platform-administrator gate, including bypass and credential ceilings."""
+    if not actor_can_administer_platform(user):
         await _audit_deny(
             user_id=user.id,
             action=action,
