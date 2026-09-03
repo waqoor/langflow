@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from lfx.services.authorization.base import ResourceVisibilityScope
 from sqlalchemy import or_
 from sqlmodel import col, select
 
@@ -102,6 +103,27 @@ _RESOURCE_ACTIONS: dict[str, frozenset[str]] = {
 def supported_actions(resource_type: str) -> frozenset[str]:
     """Return the canonical action vocabulary for a resource family."""
     return _RESOURCE_ACTIONS.get(resource_type, frozenset())
+
+
+def role_permission_allows(permissions: Iterable[str], *, resource_type: str, action: str) -> bool:
+    """Match one canonical role permission, including its resource wildcard.
+
+    The role API deliberately accepts ``<resource>:*``. Runtime policy must
+    therefore expand that value rather than exposing the literal ``*`` as an
+    effective action or silently treating the persisted permission as inert.
+    """
+    permission_set = permissions if isinstance(permissions, (set, frozenset)) else set(permissions)
+    return f"{resource_type}:{action}" in permission_set or f"{resource_type}:*" in permission_set
+
+
+def role_permission_actions(permissions: Iterable[str], *, resource_type: str) -> frozenset[str]:
+    """Return concrete supported actions granted by role permission slugs."""
+    supported = supported_actions(resource_type)
+    return frozenset(
+        action
+        for action in supported
+        if role_permission_allows(permissions, resource_type=resource_type, action=action)
+    )
 
 
 async def load_active_user(session: AsyncSession, user_id: UUID) -> User | None:
@@ -359,13 +381,7 @@ async def applicable_role_permissions(
             continue
         resolved = _role_permissions(role.id, role_by_id=role_by_id)
         permissions.update(resolved)
-        relevant = tuple(
-            sorted(
-                permission.split(":", 1)[1]
-                for permission in resolved
-                if permission.startswith(f"{resource.resource_type}:")
-            )
-        )
+        relevant = tuple(sorted(role_permission_actions(resolved, resource_type=resource.resource_type)))
         if relevant:
             sources.append(AccessSource("role", relevant, assignment.id, role.name))
     return frozenset(permissions), tuple(sources)
@@ -389,13 +405,16 @@ async def share_management_scopes(
         return ShareManagementScopes()
     roles = (await session.exec(select(AuthzRole))).all()
     role_by_id = {role.id: role for role in roles}
-    required = f"share:{action}"
     workspace_ids: set[UUID] = set()
     project_ids: set[UUID] = set()
 
     for assignment in assignments:
         role = role_by_id.get(assignment.role_id)
-        if role is None or required not in _role_permissions(role.id, role_by_id=role_by_id):
+        if role is None or not role_permission_allows(
+            _role_permissions(role.id, role_by_id=role_by_id),
+            resource_type="share",
+            action=action,
+        ):
             continue
         if assignment.domain_type == "global" and assignment.domain_id is None:
             if role.workspace_id is None:
@@ -509,13 +528,7 @@ async def effective_access_many(
             if role is None or not _assignment_applies(assignment, role, resource):
                 continue
             resolved = _role_permissions(role.id, role_by_id=role_by_id)
-            relevant = tuple(
-                sorted(
-                    permission.split(":", 1)[1]
-                    for permission in resolved
-                    if permission.startswith(f"{resource.resource_type}:") and permission.split(":", 1)[1] in supported
-                )
-            )
+            relevant = tuple(sorted(role_permission_actions(resolved, resource_type=resource.resource_type)))
             if relevant:
                 actions.update(relevant)
                 sources.append(AccessSource("role", relevant, assignment.id, role.name))
@@ -553,7 +566,129 @@ async def user_can_manage_resource_shares(
     if user.is_superuser is True and superuser_bypass:
         return True
     role_permissions, _ = await applicable_role_permissions(session, user_id=user.id, resource=resource)
-    return f"share:{share_action}" in role_permissions
+    return role_permission_allows(role_permissions, resource_type="share", action=share_action)
+
+
+async def resource_visibility_scope(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    resource_type: str,
+    action: str,
+) -> ResourceVisibilityScope:
+    """Build an exact compact scope for list-query prefiltering.
+
+    Concrete user/team shares remain IDs. Project-inherited flow access,
+    project ownership, and scoped role assignments remain project/workspace
+    scopes so list endpoints can filter before counting and pagination without
+    first loading every resource in the installation.
+    """
+    if action not in supported_actions(resource_type):
+        return ResourceVisibilityScope()
+
+    assignments = list(
+        (
+            await session.exec(
+                select(AuthzRoleAssignment)
+                .where(AuthzRoleAssignment.user_id == user_id)
+                .order_by(col(AuthzRoleAssignment.id))
+            )
+        ).all()
+    )
+    roles = list((await session.exec(select(AuthzRole).order_by(col(AuthzRole.id)))).all()) if assignments else []
+    role_by_id = {role.id: role for role in roles}
+
+    candidate_project_ids = {
+        assignment.domain_id
+        for assignment in assignments
+        if assignment.domain_type == "project" and assignment.domain_id is not None
+    }
+    scoped_projects = (
+        list(
+            (
+                await session.exec(
+                    select(Folder).where(col(Folder.id).in_(candidate_project_ids)).order_by(col(Folder.id))
+                )
+            ).all()
+        )
+        if candidate_project_ids
+        else []
+    )
+    project_by_id = {project.id: project for project in scoped_projects if project.id is not None}
+
+    workspace_ids: set[UUID] = set()
+    project_ids: set[UUID] = set()
+    all_resources = False
+    for assignment in assignments:
+        role = role_by_id.get(assignment.role_id)
+        if role is None:
+            continue
+        permissions = _role_permissions(role.id, role_by_id=role_by_id)
+        if not role_permission_allows(permissions, resource_type=resource_type, action=action):
+            continue
+        if assignment.domain_type == "global" and assignment.domain_id is None:
+            if role.workspace_id is None:
+                all_resources = True
+                break
+            workspace_ids.add(role.workspace_id)
+            continue
+        if assignment.domain_type == "workspace" and assignment.domain_id is not None:
+            if role.workspace_id is None or role.workspace_id == assignment.domain_id:
+                workspace_ids.add(assignment.domain_id)
+            continue
+        if assignment.domain_type != "project" or assignment.domain_id is None:
+            # Organization domains require a registered resolver and malformed
+            # scope rows never become global authority.
+            continue
+        project = project_by_id.get(assignment.domain_id)
+        if (
+            project is not None
+            and project.id is not None
+            and (role.workspace_id is None or role.workspace_id == project.workspace_id)
+        ):
+            project_ids.add(project.id)
+
+    if all_resources:
+        return ResourceVisibilityScope(all_resources=True)
+
+    active_team_ids = set(await active_team_ids_for_user(session, user_id))
+    target_predicates = [
+        (col(AuthzShare.scope) == "user") & (col(AuthzShare.target_id) == user_id),
+    ]
+    if active_team_ids:
+        target_predicates.append((col(AuthzShare.scope) == "team") & col(AuthzShare.target_id).in_(active_team_ids))
+    resource_predicates = [col(AuthzShare.resource_type) == resource_type]
+    if resource_type == "flow":
+        resource_predicates.append(col(AuthzShare.resource_type) == "project")
+    shares = list(
+        (
+            await session.exec(
+                select(AuthzShare)
+                .where(or_(*target_predicates), or_(*resource_predicates))
+                .order_by(col(AuthzShare.id))
+            )
+        ).all()
+    )
+
+    resource_ids: set[UUID] = set()
+    for share in shares:
+        if share.resource_type == resource_type:
+            if action in share_actions(resource_type, share.permission_level):
+                resource_ids.add(share.resource_id)
+        elif resource_type == "flow" and action in project_flow_actions(share.permission_level):
+            project_ids.add(share.resource_id)
+
+    if resource_type == "flow":
+        owned_project_ids = (
+            await session.exec(select(Folder.id).where(Folder.user_id == user_id).order_by(col(Folder.id)))
+        ).all()
+        project_ids.update(project_id for project_id in owned_project_ids if project_id is not None)
+
+    return ResourceVisibilityScope(
+        resource_ids=tuple(sorted(resource_ids, key=str)),
+        workspace_ids=tuple(sorted(workspace_ids, key=str)),
+        project_ids=tuple(sorted(project_ids, key=str)),
+    )
 
 
 async def exact_visibility_ids(
