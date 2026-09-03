@@ -1,6 +1,7 @@
 # Native authorization, teams, and sharing verification record
 
-**Repository:** `https://github.com/yazeedhasan97/langflow`
+**Canonical repository:** `https://github.com/waqoor/langflow` (ID `1353667234`)
+**Plan/request URL:** `https://github.com/yazeedhasan97/langflow` (redirects to the canonical repository)
 **Delivery branch:** `feat/auth-team-sharing`
 **Fork-main base:** `e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5`
 **Tested implementation commit:** `e7be0a60d53e75611870888f5af060b90adc8c97`
@@ -13,7 +14,7 @@
 
 The sole implementation authority is `auth_share_implementation_plan.md`, revision 1.2. The committed copy has SHA-256 `6b648457de1e62132bad19f05f08332e35b1bd7ad0b661d6e3f87b5f837a4899`; repository hooks normalized Markdown trailing spaces but did not change its requirements. This work implements only that plan.
 
-- `origin` fetch/push is `https://github.com/yazeedhasan97/langflow.git`.
+- `origin` fetch/push is the canonical `https://github.com/waqoor/langflow.git`. GitHub redirects the plan's `yazeedhasan97/langflow` URL to this same repository; both API paths report ID `1353667234` and the same branch SHAs.
 - `upstream` fetch is `https://github.com/langflow-ai/langflow.git`; its push URL is `no_push`.
 - The feature branch contains fork `main` at the base SHA above and is five commits ahead, zero behind at the implementation commit.
 - No merge to `main`, upstream PR, release, deployment, production setting change, or production credential use is part of this delivery.
@@ -192,7 +193,7 @@ git diff --name-status \
 
 The corresponding immutable comparison is:
 
-`https://github.com/yazeedhasan97/langflow/compare/e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5...e7be0a60d53e75611870888f5af060b90adc8c97`
+`https://github.com/waqoor/langflow/compare/e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5...e7be0a60d53e75611870888f5af060b90adc8c97`
 
 The manifest covers only these plan-owned groups:
 

@@ -5,9 +5,10 @@ Thank you for your interest in contributing!
 ## Team-sharing work in this fork
 
 For the approved `auth_share_implementation_plan.md` implementation, write only
-to `feat/auth-team-sharing` in `yazeedhasan97/langflow`. The delivery PR targets
-this fork's `main`; implementation work must not push directly to main/master,
-merge the PR, or modify the upstream repository.
+to `feat/auth-team-sharing` in `waqoor/langflow` (repository ID `1353667234`,
+formerly addressed as `yazeedhasan97/langflow`). The delivery PR targets this
+fork's `main`; implementation work must not push directly to main/master, merge
+the PR, or modify the upstream repository.
 
 The [implementation and verification record](docs/auth-team-sharing-verification.md)
 distinguishes completed work from pending integration and tests. Its existence
