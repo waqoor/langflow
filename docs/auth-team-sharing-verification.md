@@ -53,6 +53,7 @@ All local PASS results below apply to the implementation tree identified above. 
 | Check | Status | Actual result and boundary |
 |---|---|---|
 | Focused backend authorization/API suite | PASS | 353 passed, 0 failed, 0 skipped, 3 warnings across 11 affected files. |
+| Pure policy matrix after final range formatting | PASS | 112 passed, 0 failed, 0 skipped, 1 existing deprecation warning in 0.88s. |
 | RBAC production-service integration selection | PASS | 10 passed, 0 failed, 1 deselected, 1 warning in 102.19s. The deselected Chroma case is classified separately below. |
 | LFX authorization service contract | PASS | 17 passed, 0 failed, 0 skipped, 4 warnings in an isolated LFX project environment. |
 | SQLite migration matrix | PASS | 16 passed and 8 dialect-inapplicable skips; migration upgrade/backfill/downgrade and metadata checks executed on SQLite. |

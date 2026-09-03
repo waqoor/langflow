@@ -5,7 +5,6 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-
 from langflow.services.authorization.policy import (
     TeamMemberState,
     TeamOperation,
@@ -91,9 +90,7 @@ def test_platform_operations_are_not_granted_by_team_roles(role: str | None, ope
     assert not team_operation_allowed(
         operation, actor_is_active=True, actor_can_administer_platform=False, actor_role=role
     )
-    assert team_operation_allowed(
-        operation, actor_is_active=True, actor_can_administer_platform=True, actor_role=role
-    )
+    assert team_operation_allowed(operation, actor_is_active=True, actor_can_administer_platform=True, actor_role=role)
 
 
 @pytest.mark.parametrize("role", ["admin", "maintainer", "user"])
