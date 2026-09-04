@@ -1,7 +1,14 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { AxiosError } from "axios";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { customShouldSkipAuthRefresh } from "../../utils/custom-should-skip-auth-refresh";
 import { CustomAdminPageMenuItem } from "../custom-admin-page-menu-item";
+import CustomFlowShareAction from "../custom-flow-share-action";
 import { CustomHeaderMenuItemsTitle } from "../custom-header-menu-items-title";
 import CustomLoginBrandTitle from "../custom-login-brand-title";
 import CustomLoginSignupPrompt from "../custom-login-signup-prompt";
@@ -33,8 +40,6 @@ jest.mock("@/components/core/appHeaderComponent/components/HeaderMenu", () => ({
     </button>
   ),
 }));
-
-jest.mock("../resource-share-dialog", () => () => null);
 
 describe("OSS auth customization seams", () => {
   beforeEach(() => {
@@ -183,12 +188,53 @@ describe("OSS auth customization seams", () => {
         resourceType="project"
         resourceName="Project one"
         display="label"
+        onShare={jest.fn()}
       />,
     );
 
     expect(
       screen.getByRole("button", { name: /Share Project one/i }),
     ).toBeVisible();
+  });
+
+  it("closes the editor menu before requesting the flow sharing dialog", async () => {
+    const user = userEvent.setup();
+    const onShare = jest.fn();
+    mockCapabilities.mockReturnValue({
+      data: {
+        enforcement_active: true,
+        service_ready: true,
+        user_team_sharing_supported: true,
+      },
+      isLoading: false,
+      isError: false,
+    });
+    mockPermissions.mockReturnValue({
+      capability: jest.fn(() => true),
+      isUnavailable: false,
+    });
+
+    render(
+      <DropdownMenu>
+        <DropdownMenuTrigger>Open sharing menu</DropdownMenuTrigger>
+        <DropdownMenuContent>
+          <CustomFlowShareAction
+            resourceId="flow-1"
+            resourceType="flow"
+            resourceName="Flow one"
+            onShare={onShare}
+          />
+        </DropdownMenuContent>
+      </DropdownMenu>,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Open sharing menu" });
+    await user.click(trigger);
+    await user.click(screen.getByTestId("share-flow-flow-1"));
+
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(onShare).toHaveBeenCalledTimes(1);
   });
 
   it("never skips auth refresh", () => {

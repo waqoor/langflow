@@ -5,6 +5,7 @@ import useHandleNodeClass from "@/CustomNodes/hooks/use-handle-node-class";
 import { classNameFromType } from "@/CustomNodes/utils/class-name-from-type";
 import { ActionPickerAddButton } from "@/components/core/parameterRenderComponent/components/actionPickerComponent/AddButton";
 import { ActionPickerAddingContext } from "@/components/core/parameterRenderComponent/components/actionPickerComponent/addingContext";
+import { getDomId } from "@/components/core/parameterRenderComponent/helpers/get-node-scoped-dom-id";
 import type { NodeInfoType } from "@/components/core/parameterRenderComponent/types";
 import { usePostTemplateValue } from "@/controllers/API/queries/nodes/use-post-template-value";
 import {
@@ -113,7 +114,7 @@ export default function NodeInputField({
 
   const isFlexView = FLEX_VIEW_TYPES.includes(type ?? "");
 
-  const labelId = `node-${data.id}-field-${name}-label`;
+  const labelId = getDomId("node", data.id, "field", name, "label");
 
   const Handle = (
     <HandleRenderComponent

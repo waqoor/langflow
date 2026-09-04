@@ -1,11 +1,9 @@
-import { type MouseEvent, useState } from "react";
 import { useTranslation } from "react-i18next";
 import ForwardedIconComponent from "@/components/common/genericIconComponent";
 import { Button } from "@/components/ui/button";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { usePermissions } from "@/contexts/permissionsContext";
 import { useGetAuthorizationCapabilities } from "@/controllers/API/queries/authorization";
-import ResourceShareDialog from "./resource-share-dialog";
 
 export type CustomShareResourceType =
   | "deployment"
@@ -22,15 +20,16 @@ export interface CustomResourceShareActionProps {
   resourceName?: string;
   /** Compact actions use only an icon; headers may request a text label. */
   display?: "icon" | "label" | "menu";
+  onShare?: () => void;
 }
 
 function ProjectResourceShareAction({
   resourceId,
   resourceName,
   display = "menu",
+  onShare,
 }: CustomResourceShareActionProps) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
   const { capability, isUnavailable } = usePermissions();
   const capabilities = useGetAuthorizationCapabilities();
   const supported = Boolean(
@@ -46,48 +45,32 @@ function ProjectResourceShareAction({
     return null;
   }
 
-  const openDialog = (event: MouseEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setOpen(true);
-  };
+  if (!onShare) return null;
 
-  return (
-    <>
-      {display === "menu" ? (
-        <DropdownMenuItem
-          className="cursor-pointer text-xs"
-          data-testid={`share-project-${resourceId}`}
-          onSelect={(event) => event.preventDefault()}
-          onClick={openDialog}
-        >
-          <ForwardedIconComponent
-            name="Share2"
-            aria-hidden="true"
-            className="mr-2 h-4 w-4"
-          />
-          {t("misc.share")}
-        </DropdownMenuItem>
-      ) : (
-        <Button
-          type="button"
-          variant="ghost"
-          size={display === "icon" ? "icon" : "sm"}
-          aria-label={t("sharing.action.for", { resource: resourceName })}
-          onClick={openDialog}
-        >
-          <ForwardedIconComponent name="Share2" aria-hidden="true" />
-          {display === "label" ? t("misc.share") : null}
-        </Button>
-      )}
-      <ResourceShareDialog
-        open={open}
-        onOpenChange={setOpen}
-        resourceType="project"
-        resourceId={resourceId}
-        resourceName={resourceName}
+  return display === "menu" ? (
+    <DropdownMenuItem
+      className="cursor-pointer text-xs"
+      data-testid={`share-project-${resourceId}`}
+      onSelect={onShare}
+    >
+      <ForwardedIconComponent
+        name="Share2"
+        aria-hidden="true"
+        className="mr-2 h-4 w-4"
       />
-    </>
+      {t("misc.share")}
+    </DropdownMenuItem>
+  ) : (
+    <Button
+      type="button"
+      variant="ghost"
+      size={display === "icon" ? "icon" : "sm"}
+      aria-label={t("sharing.action.for", { resource: resourceName })}
+      onClick={onShare}
+    >
+      <ForwardedIconComponent name="Share2" aria-hidden="true" />
+      {display === "label" ? t("misc.share") : null}
+    </Button>
   );
 }
 

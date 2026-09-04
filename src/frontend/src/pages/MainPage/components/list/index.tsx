@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePermissions } from "@/contexts/permissionsContext";
+import ResourceShareDialog from "@/customization/components/resource-share-dialog";
 import { useCustomNavigate } from "@/customization/hooks/use-custom-navigate";
 import useDeleteFlow from "@/hooks/flows/use-delete-flow";
 import DeleteConfirmationModal from "@/modals/deleteConfirmationModal";
@@ -47,6 +48,7 @@ const ListComponent = ({
   const { folderId } = useParams();
   const [openSettings, setOpenSettings] = useState(false);
   const [openExportModal, setOpenExportModal] = useState(false);
+  const [openShareDialog, setOpenShareDialog] = useState(false);
   const isComponent = flowData.is_component ?? false;
 
   const { getIcon } = useGetTemplateStyle(flowData);
@@ -243,11 +245,21 @@ const ListComponent = ({
                 handleEdit={() => {
                   setOpenSettings(true);
                 }}
+                handleShare={() => setOpenShareDialog(true)}
               />
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
       </Card>
+      {openShareDialog && (
+        <ResourceShareDialog
+          open
+          onOpenChange={setOpenShareDialog}
+          resourceType="flow"
+          resourceId={flowData.id}
+          resourceName={flowData.name}
+        />
+      )}
       {openDelete && (
         <DeleteConfirmationModal
           open={openDelete}

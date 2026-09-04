@@ -15,6 +15,7 @@ import { usePermissions } from "@/contexts/permissionsContext";
 import { usePatchUpdateFlow } from "@/controllers/API/queries/flows/use-patch-update-flow";
 import CustomFlowShareAction from "@/customization/components/custom-flow-share-action";
 import { CustomLink } from "@/customization/components/custom-link";
+import ResourceShareDialog from "@/customization/components/resource-share-dialog";
 import { ENABLE_PUBLISH, ENABLE_WIDGET } from "@/customization/feature-flags";
 import { customMcpOpen } from "@/customization/utils/custom-mcp-open";
 import ApiModal from "@/modals/apiModal";
@@ -40,6 +41,7 @@ export default function PublishDropdown({
   const location = useHref("/");
   const domain = window.location.origin + location;
   const [openEmbedModal, setOpenEmbedModal] = useState(false);
+  const [openShareDialog, setOpenShareDialog] = useState(false);
   const currentFlow = useFlowsManagerStore((state) => state.currentFlow);
   const flowId = currentFlow?.id;
   const flowName = currentFlow?.name;
@@ -126,7 +128,6 @@ export default function PublishDropdown({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
-          forceMount
           sideOffset={7}
           alignOffset={-2}
           align="end"
@@ -139,6 +140,7 @@ export default function PublishDropdown({
               resourceType="flow"
               resourceName={flowName}
               menuContext="editor"
+              onShare={() => setOpenShareDialog(true)}
             />
           )}
           <DropdownMenuItem
@@ -245,6 +247,15 @@ export default function PublishDropdown({
           )}
         </DropdownMenuContent>
       </DropdownMenu>
+      {flowId && openShareDialog && (
+        <ResourceShareDialog
+          open
+          onOpenChange={setOpenShareDialog}
+          resourceType="flow"
+          resourceId={flowId}
+          resourceName={flowName}
+        />
+      )}
       <ApiModal open={openApiModal} setOpen={setOpenApiModal}>
         <>{children}</>
       </ApiModal>

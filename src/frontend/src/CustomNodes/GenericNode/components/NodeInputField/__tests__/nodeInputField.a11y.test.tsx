@@ -158,6 +158,28 @@ describe("NodeInputField", () => {
     );
   });
 
+  it("encodes node ids before using them as ARIA id references", () => {
+    const dataWithUnsafeId = {
+      ...baseData,
+      id: "Prompt, Template-B8Bz7",
+    } as unknown as NodeDataType;
+
+    render(
+      <ReactFlowProvider>
+        <NodeInputField {...baseProps} data={dataWithUnsafeId} />
+      </ReactFlowProvider>,
+    );
+
+    const parameter = screen.getByTestId("mock-parameter-component");
+    const labelId = parameter.getAttribute("data-aria-labelledby");
+
+    expect(labelId).toBe(
+      "node-Prompt%2C%20Template-B8Bz7-field-input_value-label",
+    );
+    expect(labelId).not.toMatch(/\s/);
+    expect(document.getElementById(labelId!)).toHaveTextContent("Input Value");
+  });
+
   it("marks a required field for assistive tech without duplicating the asterisk visually", () => {
     render(
       <ReactFlowProvider>
