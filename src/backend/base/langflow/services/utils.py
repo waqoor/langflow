@@ -27,7 +27,7 @@ from langflow.services.schema import ServiceType
 from .deps import get_auth_service, get_db_service, get_service, get_settings_service, session_scope
 
 if TYPE_CHECKING:
-    from lfx.services.settings.manager import SettingsService
+    from lfx.services.settings.service import SettingsService
     from sqlmodel.ext.asyncio.session import AsyncSession
 
 

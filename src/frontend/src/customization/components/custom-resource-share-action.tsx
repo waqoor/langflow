@@ -24,9 +24,8 @@ export interface CustomResourceShareActionProps {
   display?: "icon" | "label" | "menu";
 }
 
-export default function CustomResourceShareAction({
+function ProjectResourceShareAction({
   resourceId,
-  resourceType,
   resourceName,
   display = "menu",
 }: CustomResourceShareActionProps) {
@@ -40,7 +39,6 @@ export default function CustomResourceShareAction({
       capabilities.data.user_team_sharing_supported,
   );
   if (
-    resourceType !== "project" ||
     isUnavailable ||
     !supported ||
     !capability(resourceId, "can_manage_shares")
@@ -91,4 +89,11 @@ export default function CustomResourceShareAction({
       />
     </>
   );
+}
+
+export default function CustomResourceShareAction(
+  props: CustomResourceShareActionProps,
+) {
+  if (props.resourceType !== "project") return null;
+  return <ProjectResourceShareAction {...props} />;
 }

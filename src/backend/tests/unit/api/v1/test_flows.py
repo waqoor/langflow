@@ -69,7 +69,8 @@ async def _attach_deployment_to_flow(*, user_id: UUID, flow_id: UUID, project_id
 
 
 async def test_create_flow(client: AsyncClient, logged_in_headers):
-    # Use relative path - absolute paths outside allowed directory are rejected
+    # Use the caller's canonical default project; explicit unknown project IDs
+    # are rejected rather than silently retargeted.
     flow_filename = f"{uuid.uuid4()}.json"
     basic_case = {
         "name": "string",
@@ -82,13 +83,12 @@ async def test_create_flow(client: AsyncClient, logged_in_headers):
         "webhook": False,
         "endpoint_name": "string",
         "tags": ["string"],
-        "folder_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
         "fs_path": flow_filename,
     }
     response = await client.post("api/v1/flows/", json=basic_case, headers=logged_in_headers)
     result = response.json()
 
-    assert response.status_code == status.HTTP_201_CREATED
+    assert response.status_code == status.HTTP_201_CREATED, response.text
     assert isinstance(result, dict), "The result must be a dictionary"
     assert "data" in result, "The result must have a 'data' key"
     assert "description" in result, "The result must have a 'description' key"
@@ -594,7 +594,6 @@ async def test_read_flow(client: AsyncClient, logged_in_headers):
         "webhook": False,
         "endpoint_name": "string",
         "tags": ["string"],
-        "folder_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     }
     response_ = await client.post("api/v1/flows/", json=basic_case, headers=logged_in_headers)
     id_ = response_.json()["id"]
@@ -632,7 +631,6 @@ async def test_update_flow(client: AsyncClient, logged_in_headers):
         "webhook": False,
         "endpoint_name": "string",
         "tags": ["string"],
-        "folder_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     }
     basic_case["name"] = name
     response_ = await client.post("api/v1/flows/", json=basic_case, headers=logged_in_headers)
@@ -1179,7 +1177,6 @@ async def test_read_flows_user_isolation(client: AsyncClient, logged_in_headers,
         "webhook": False,
         "endpoint_name": "user1_flow_1_endpoint",
         "tags": ["user1"],
-        "folder_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     }
 
     flow_user1_2 = {
@@ -1193,7 +1190,6 @@ async def test_read_flows_user_isolation(client: AsyncClient, logged_in_headers,
         "webhook": False,
         "endpoint_name": "user1_flow_2_endpoint",
         "tags": ["user1"],
-        "folder_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     }
 
     # Create flows for the second user
@@ -1208,7 +1204,6 @@ async def test_read_flows_user_isolation(client: AsyncClient, logged_in_headers,
         "webhook": False,
         "endpoint_name": "user2_flow_1_endpoint",
         "tags": ["user2"],
-        "folder_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     }
 
     # Create flows using the appropriate user headers

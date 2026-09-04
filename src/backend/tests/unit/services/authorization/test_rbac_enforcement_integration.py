@@ -209,7 +209,8 @@ async def test_admin_has_full_flow_access(client):
         )
         assert create.status_code == 201, create.text
         # delete -> allowed (admin has flow:delete)
-        assert (await client.delete(f"api/v1/flows/{flow_id}", headers=headers)).status_code == 200
+        delete = await client.delete(f"api/v1/flows/{flow_id}", headers=headers)
+        assert delete.status_code == 200, delete.text
         # the flow is gone -> now 404 for everyone (sanity)
         assert (await client.get(f"api/v1/flows/{flow_id}", headers=headers)).status_code == 404
 

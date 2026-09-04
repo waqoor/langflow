@@ -10,7 +10,7 @@ import os
 import re
 import zipfile
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 import aiofiles
@@ -437,7 +437,7 @@ async def _resolve_flow_destination(
         ).first()
     if folder is None:
         raise HTTPException(status_code=400, detail="Folder not found")
-    return folder.workspace_id, folder.id
+    return cast("UUID | None", folder.workspace_id), cast("UUID", folder.id)
 
 
 async def destination_folder_owner_id(session: AsyncSession, folder_id: UUID | None) -> UUID | None:
@@ -625,7 +625,7 @@ async def _update_existing_flow(
 
     settings_service = get_settings_service()
     actor_user_id = current_user.id
-    owner_user_id: UUID = existing_flow.user_id
+    owner_user_id = cast("UUID", existing_flow.user_id)
     is_owner_edit = owner_user_id == actor_user_id
     can_manage_owner_fields = is_owner_edit or actor_can_administer_platform(current_user)
     existing_folder_id = existing_flow.folder_id
@@ -806,7 +806,7 @@ async def _patch_flow(
 
     settings_service = get_settings_service()
 
-    owner_user_id: UUID = db_flow.user_id
+    owner_user_id = cast("UUID", db_flow.user_id)
     is_owner_edit = owner_user_id == user_id
     can_manage_owner_fields = is_owner_edit or actor_is_platform_admin
     existing_folder_id = db_flow.folder_id

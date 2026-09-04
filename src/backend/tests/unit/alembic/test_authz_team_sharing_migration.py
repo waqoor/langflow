@@ -85,7 +85,13 @@ def test_team_sharing_migration_backfills_and_round_trips(authz_database_url: st
         assert "revision" not in {column["name"] for column in inspector.get_columns("authz_share")}
 
         # Leave a reusable CI database at the candidate head for the real
-        # service tests that run after this migration check.
+        # service tests that run after this migration check. The deliberately
+        # invalid legacy fixture must survive the round trip, but it must not
+        # leak into those readiness tests: production requires operators to
+        # repair or retire such teams before collaboration becomes ready.
         command.upgrade(alembic_cfg, "head")
+        with engine.begin() as connection:
+            deleted = connection.execute(text("DELETE FROM authz_team WHERE id = :id"), {"id": team_id})
+            assert deleted.rowcount == 1
     finally:
         engine.dispose()

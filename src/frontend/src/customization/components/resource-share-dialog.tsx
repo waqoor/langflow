@@ -264,6 +264,11 @@ export function ResourceShareDialog({
 
   useEffect(() => {
     setGrantOffset(0);
+    setRecipientType("user");
+    setSearch("");
+    setSelectedRecipient(null);
+    setPermission("execute");
+    setError(null);
   }, [open, resourceId, resourceType]);
 
   const contractReady = Boolean(

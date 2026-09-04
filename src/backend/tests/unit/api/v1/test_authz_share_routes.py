@@ -895,6 +895,81 @@ async def test_delete_share_snapshots_then_removes_targeted_rules_after_commit(m
     assert stub.sync_shares_calls == 0
 
 
+@pytest.mark.parametrize("mutation", ["create", "update", "delete"])
+@pytest.mark.asyncio
+async def test_share_mutations_reauthorize_inside_each_lock_retry(
+    mutation,
+    monkeypatch,
+    patch_authz,
+    silence_audit,  # noqa: ARG001
+):
+    """Every fresh retry transaction must rebuild policy and audit state."""
+    from langflow.services.database.models.flow.model import Flow
+
+    patch_authz(cross_user=False, enabled=False)
+    owner = _make_user()
+    flow = SimpleNamespace(id=uuid4(), user_id=owner.id)
+    share = AuthzShare(
+        id=uuid4(),
+        resource_type="flow",
+        resource_id=flow.id,
+        scope=ShareScope.USER.value,
+        target_id=uuid4(),
+        permission_level=SharePermissionLevel.READ.value,
+        created_by=owner.id,
+    )
+    session = _FakeAsyncSession({(AuthzShare, share.id): share, (Flow, flow.id): flow})
+    authorization_sessions = []
+    original_authorize = shares_module._authorize_resource
+
+    async def tracked_authorize(**kwargs):
+        authorization_sessions.append(kwargs.get("audit_session"))
+        await original_authorize(**kwargs)
+
+    class RetryOnceError(RuntimeError):
+        pass
+
+    transaction_name = f"{mutation}_share_transaction"
+    original_transaction = getattr(shares_module, transaction_name)
+    transaction_attempts = 0
+
+    async def flaky_transaction(*args, **kwargs):
+        nonlocal transaction_attempts
+        transaction_attempts += 1
+        if transaction_attempts == 1:
+            raise RetryOnceError
+        return await original_transaction(*args, **kwargs)
+
+    async def force_one_retry(operation, *, session, description):  # noqa: ARG001
+        try:
+            await operation(0)
+        except RetryOnceError:
+            await session.rollback()
+        return await operation(1)
+
+    monkeypatch.setattr(shares_module, "_authorize_resource", tracked_authorize)
+    monkeypatch.setattr(shares_module, transaction_name, flaky_transaction)
+    monkeypatch.setattr(shares_module, "run_with_lock_retry", force_one_retry)
+
+    if mutation == "create":
+        await shares_module.create_share(payload=_payload_for(flow.id), current_user=owner, session=session)
+    elif mutation == "update":
+        await shares_module.update_share(
+            share_id=share.id,
+            payload=ShareUpdate(permission_level=SharePermissionLevel.WRITE.value),
+            current_user=owner,
+            session=session,
+            response=Response(),
+        )
+    else:
+        await shares_module.delete_share(share_id=share.id, current_user=owner, session=session)
+
+    assert transaction_attempts == 2
+    assert authorization_sessions == [session, session]
+    assert session.rolled_back == 1
+    assert session.committed == 1
+
+
 # --------------------------------------------------------------------------- #
 # Floor behavior when the authorization plugin is active
 # --------------------------------------------------------------------------- #
@@ -1363,6 +1438,67 @@ def test_team_share_visibility_query_requires_active_team():
     assert "join authz_team" in sql
     assert "authz_team.is_active = true" in sql
     assert '"user".is_active = true' in sql
+    assert "exists" in sql
+    assert "admin" in statement.compile().params.values()
+
+
+@pytest.mark.asyncio
+async def test_team_share_visibility_query_requires_an_active_admin():
+    from langflow.services.database.models.auth import AuthzTeam, AuthzTeamMember, TeamRole
+    from langflow.services.database.models.user.model import User
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import StaticPool
+    from sqlmodel import SQLModel
+    from sqlmodel.ext.asyncio.session import AsyncSession
+
+    engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(
+                lambda sync_connection: SQLModel.metadata.create_all(
+                    sync_connection,
+                    tables=[User.__table__, AuthzTeam.__table__, AuthzTeamMember.__table__],
+                )
+            )
+
+        actor = User(username="actor", password=str(uuid4()), is_active=True)
+        active_admin = User(username="active-admin", password=str(uuid4()), is_active=True)
+        inactive_admin = User(username="inactive-admin", password=str(uuid4()), is_active=False)
+        valid_team = AuthzTeam(team_name="Valid", adom_name="valid")
+        no_admin_team = AuthzTeam(team_name="No admin", adom_name="no-admin")
+        inactive_admin_team = AuthzTeam(team_name="Inactive admin", adom_name="inactive-admin")
+
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            session.add_all([actor, active_admin, inactive_admin, valid_team, no_admin_team, inactive_admin_team])
+            await session.flush()
+            session.add_all(
+                [
+                    AuthzTeamMember(team_id=valid_team.id, user_id=actor.id),
+                    AuthzTeamMember(
+                        team_id=valid_team.id,
+                        user_id=active_admin.id,
+                        role=TeamRole.ADMIN.value,
+                    ),
+                    AuthzTeamMember(team_id=no_admin_team.id, user_id=actor.id),
+                    AuthzTeamMember(team_id=inactive_admin_team.id, user_id=actor.id),
+                    AuthzTeamMember(
+                        team_id=inactive_admin_team.id,
+                        user_id=inactive_admin.id,
+                        role=TeamRole.ADMIN.value,
+                    ),
+                ]
+            )
+            await session.commit()
+
+            team_ids = set((await session.exec(shares_module._active_team_ids_for_user(actor.id))).all())
+
+        assert team_ids == {valid_team.id}
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

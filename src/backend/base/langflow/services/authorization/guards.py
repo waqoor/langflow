@@ -38,6 +38,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
     from uuid import UUID
 
+    from sqlmodel.ext.asyncio.session import AsyncSession
+
     from langflow.services.database.models.user.model import User, UserRead
 
 # Action enums coerced to string values.
@@ -112,36 +114,56 @@ def capability_probe() -> Iterator[None]:
         _capability_probe.reset(token)
 
 
-async def _audit_suppressed() -> None:
-    """Awaitable no-op standing in for a suppressed decision row."""
-    return
-
-
-def _audit_guard_decision(
+async def _audit_guard_decision(
     *,
     user_id: UUID | None,
     action: str,
     obj: str,
     result: str,
     details: dict[str, Any] | None = None,
-):
+    session: AsyncSession | None = None,
+) -> None:
     """Record one authorization *decision* made by a guard.
 
     Every row written from this module is a check, not an effect. Tagging it
     keeps it distinguishable from the row a route writes after a mutation is
     durable: both share an action name (a ``share:create`` check and a created
     share both read ``share:create``), so without the tag a reader cannot tell
-    an evaluated permission from a performed action. Returns the coroutine so
-    callers can await it or gather several.
+    an evaluated permission from a performed action.
+
+    An allowed decision made inside a mutation transaction is staged with that
+    transaction when durable auditing is enabled. Persisting it through the
+    separate audit writer after the mutation session has read policy data can
+    invalidate SQLite's read snapshot and make the authorized write fail with
+    ``SQLITE_BUSY_SNAPSHOT``. A denial first rolls back the doomed mutation
+    transaction, then uses the independent writer so the denial survives that
+    rollback without contending with the caller's SQLite write lock.
     """
     if _capability_probe.get():
-        return _audit_suppressed()
-    return _audit.audit_decision(
+        return
+
+    tagged_details = {**(details or {}), "event": _audit.AUDIT_EVENT_DECISION}
+    if session is not None:
+        if result == _audit.AUDIT_DENY:
+            await session.rollback()
+        else:
+            staged = _audit.stage_audit_decision(
+                session=session,
+                user_id=user_id,
+                action=action,
+                obj=obj,
+                result=result,
+                details=tagged_details,
+            )
+            if staged:
+                return
+
+    await _audit.audit_decision(
         user_id=user_id,
         action=action,
         obj=obj,
         result=result,
-        details={**(details or {}), "event": _audit.AUDIT_EVENT_DECISION},
+        details=tagged_details,
     )
 
 
@@ -209,6 +231,7 @@ async def ensure_permission(
     act: str,
     context: dict[str, Any] | None = None,
     detail: str | None = None,
+    audit_session: AsyncSession | None = None,
 ) -> None:
     """Raise HTTP 403 when the user may not perform the action (audited).
 
@@ -236,6 +259,7 @@ async def ensure_permission(
             obj=obj,
             result=_audit.AUDIT_ALLOW,
             details=audit_details,
+            session=audit_session,
         )
         return
 
@@ -258,6 +282,7 @@ async def ensure_permission(
             obj=obj,
             result=_audit.AUDIT_DENY,
             details={**audit_details, "error": str(exc)},
+            session=audit_session,
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -270,6 +295,7 @@ async def ensure_permission(
         obj=obj,
         result=_audit.AUDIT_ALLOW if allowed else _audit.AUDIT_DENY,
         details=audit_details,
+        session=audit_session,
     )
 
     if not allowed:
@@ -289,6 +315,7 @@ async def _ensure_resource_permission(
     act_str: str,
     resolved_domain: str,
     extra_context: dict[str, Any],
+    audit_session: AsyncSession | None,
 ) -> None:
     """Build object key, apply owner override, else delegate to ensure_permission."""
     obj = f"{resource_type}:{resource_id}" if resource_id else f"{resource_type}:*"
@@ -305,6 +332,7 @@ async def _ensure_resource_permission(
                 "external_auth_provider": external_context.provider,
                 "external_access_level": external_context.level,
             },
+            session=audit_session,
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -323,6 +351,7 @@ async def _ensure_resource_permission(
             obj=obj,
             result=_audit.AUDIT_OWNER_OVERRIDE,
             details={"domain": resolved_domain, **_auth_audit_details()},
+            session=audit_session,
         )
         return
 
@@ -332,6 +361,7 @@ async def _ensure_resource_permission(
         obj=obj,
         act=act_str,
         context=extra_context,
+        audit_session=audit_session,
     )
 
 
@@ -459,6 +489,7 @@ async def _ensure_typed(
     act_str: str,
     kwargs: dict[str, Any],
     domain_override: str | None,
+    audit_session: AsyncSession | None = None,
 ) -> None:
     """Shared body for ``ensure_*_permission`` helpers.
 
@@ -523,6 +554,7 @@ async def _ensure_typed(
         act_str=act_str,
         resolved_domain=resolved_domain,
         extra_context=extra_context,
+        audit_session=audit_session,
     )
 
 
@@ -543,6 +575,7 @@ async def ensure_flow_permission(
     folder_id: UUID | None = None,
     folder_user_id: UUID | None = None,
     domain: str | None = None,
+    audit_session: AsyncSession | None = None,
 ) -> None:
     """Check flow permission (owner override, then plugin enforce).
 
@@ -562,6 +595,7 @@ async def ensure_flow_permission(
             "folder_user_id": folder_user_id,
         },
         domain_override=domain,
+        audit_session=audit_session,
     )
 
 
@@ -914,6 +948,7 @@ async def ensure_resource_share_administration(
     recipient_scope: str | None = None,
     recipient_id: UUID | None = None,
     subject_user_id: UUID | None = None,
+    audit_session: AsyncSession | None = None,
 ) -> None:
     """Authorize share administration against the exact stored resource.
 
@@ -943,4 +978,5 @@ async def ensure_resource_share_administration(
             "subject_user_id": subject_user_id,
             "share_user_id": resource_owner_id,
         },
+        audit_session=audit_session,
     )

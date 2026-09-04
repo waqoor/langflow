@@ -390,7 +390,7 @@ def _strip_template_field_value(field: dict, variable_references: set[str] | Non
         # deployment target can re-resolve the credential it provisions under
         # that name. Anything that fails the reference shape check is nulled.
         value = field.get("value")
-        if _is_variable_reference(value):
+        if isinstance(value, str) and _is_variable_reference(value):
             variable_references.add(value)
         else:
             field["value"] = None

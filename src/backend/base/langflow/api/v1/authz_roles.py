@@ -11,7 +11,7 @@ from lfx.log.logger import logger
 from lfx.services.authorization import AuthorizationMutation, AuthorizationMutationKind
 from lfx.utils.util_strings import escape_like_pattern
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import select
+from sqlmodel import col, select
 
 from langflow.api.utils import CurrentActiveUser, DbSession
 from langflow.api.v1.schemas.authz_roles import RoleCreate, RoleRead, RoleUpdate
@@ -151,8 +151,8 @@ async def list_roles(
     if is_system is not None:
         stmt = stmt.where(AuthzRole.is_system == is_system)
     if name:
-        stmt = stmt.where(AuthzRole.name.ilike(f"%{escape_like_pattern(name)}%", escape="\\"))
-    stmt = stmt.order_by(AuthzRole.name, AuthzRole.id).offset(offset).limit(limit)
+        stmt = stmt.where(col(AuthzRole.name).ilike(f"%{escape_like_pattern(name)}%", escape="\\"))
+    stmt = stmt.order_by(col(AuthzRole.name), col(AuthzRole.id)).offset(offset).limit(limit)
     rows = (await session.exec(stmt)).all()
     return [RoleRead.model_validate(row) for row in rows]
 

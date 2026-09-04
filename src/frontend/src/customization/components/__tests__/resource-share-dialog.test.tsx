@@ -187,4 +187,52 @@ describe("ResourceShareDialog", () => {
       { enabled: true },
     );
   });
+
+  it("clears a pending grant when the dialog is closed and reopened", () => {
+    const onOpenChange = jest.fn();
+    const view = render(
+      <ResourceShareDialog
+        open
+        onOpenChange={onOpenChange}
+        resourceType="flow"
+        resourceId="flow-1"
+        resourceName="Quarterly agent"
+      />,
+    );
+
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Search recipients" }),
+      {
+        target: { value: "Second" },
+      },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Second User" }));
+    fireEvent.click(screen.getByRole("radio", { name: /^Editable/ }));
+    expect(screen.getByRole("button", { name: "Share" })).toBeEnabled();
+
+    view.rerender(
+      <ResourceShareDialog
+        open={false}
+        onOpenChange={onOpenChange}
+        resourceType="flow"
+        resourceId="flow-1"
+        resourceName="Quarterly agent"
+      />,
+    );
+    view.rerender(
+      <ResourceShareDialog
+        open
+        onOpenChange={onOpenChange}
+        resourceType="flow"
+        resourceId="flow-1"
+        resourceName="Quarterly agent"
+      />,
+    );
+
+    expect(
+      screen.getByRole("textbox", { name: "Search recipients" }),
+    ).toHaveValue("");
+    expect(screen.getByRole("radio", { name: /^Not editable/ })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Share" })).toBeDisabled();
+  });
 });

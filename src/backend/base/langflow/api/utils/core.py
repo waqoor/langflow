@@ -322,8 +322,8 @@ def get_causing_exception(exc: BaseException) -> BaseException:
     # curated message (e.g. a bundle shim) that should win over its cause.
     if isinstance(exc, ModuleNotFoundError) and not str(exc).startswith("No module named"):
         return exc
-    if getattr(exc, "__cause__", None):
-        return get_causing_exception(exc.__cause__)
+    if cause := exc.__cause__:
+        return get_causing_exception(cause)
     return exc
 
 

@@ -135,7 +135,7 @@ async def list_audit_log(
         # events explicitly classified as unknown.
         base = base.where(
             or_(
-                AuthzAuditLog.actor_type == actor_type,
+                col(AuthzAuditLog.actor_type) == actor_type,
                 col(AuthzAuditLog.actor_type).is_(None),
             )
         )

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable
-from typing import Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Literal, NoReturn, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Query, Response, status
 from lfx.log.logger import logger
 from lfx.services.authorization.base import BaseAuthorizationService, ShareRuleSnapshot
 from sqlalchemy import and_, exists, or_, true
+from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import col, select
 
@@ -52,7 +53,7 @@ from langflow.services.authorization.share_management import update_share as upd
 from langflow.services.authorization.team_management import actor_can_administer_platform
 from langflow.services.authorization.utils import audit_decision
 from langflow.services.database.lock_retry import run_with_lock_retry
-from langflow.services.database.models.auth import AuthzShare, AuthzTeam, AuthzTeamMember, ShareScope
+from langflow.services.database.models.auth import AuthzShare, AuthzTeam, AuthzTeamMember, ShareScope, TeamRole
 from langflow.services.database.models.deployment.model import Deployment
 from langflow.services.database.models.file.model import File as UserFile
 from langflow.services.database.models.flow.model import AccessTypeEnum, Flow
@@ -63,6 +64,9 @@ from langflow.services.database.models.user.model import User
 from langflow.services.database.models.variable.model import Variable
 from langflow.services.deps import get_authorization_service
 
+if TYPE_CHECKING:
+    from sqlmodel.ext.asyncio.session import AsyncSession
+
 router = APIRouter(prefix="/authz/shares", tags=["Authorization"])
 
 _SHARE_POLICY_HOOK_TIMEOUT_SECONDS = 5.0
@@ -71,7 +75,7 @@ _LIST_SHARES_DEFAULT_LIMIT = 100
 _DISPLAY_MODE_BY_PERMISSION = {"read": "read", "execute": "use", "write": "edit", "admin": "admin"}
 
 
-def _raise_share_error(exc: ShareManagementError) -> None:
+def _raise_share_error(exc: ShareManagementError) -> NoReturn:
     if exc.code == "SHARE_NOT_FOUND":
         detail: str | dict[str, str] = "Share not found"
     elif exc.code == "SHARE_RESOURCE_NOT_FOUND":
@@ -168,6 +172,17 @@ def _share_visible(
 
 
 def _active_team_ids_for_user(user_id: UUID):
+    admin_membership = aliased(AuthzTeamMember)
+    admin_user = aliased(User)
+    has_active_admin = exists(
+        select(admin_membership.id)
+        .join(admin_user, col(admin_user.id) == col(admin_membership.user_id))
+        .where(
+            col(admin_membership.team_id) == col(AuthzTeamMember.team_id),
+            col(admin_membership.role) == TeamRole.ADMIN.value,
+            col(admin_user.is_active).is_(True),
+        )
+    )
     return (
         select(AuthzTeamMember.team_id)
         .join(AuthzTeam, col(AuthzTeam.id) == col(AuthzTeamMember.team_id))
@@ -176,6 +191,7 @@ def _active_team_ids_for_user(user_id: UUID):
             AuthzTeamMember.user_id == user_id,
             AuthzTeam.is_active == True,  # noqa: E712
             User.is_active == True,  # noqa: E712
+            has_active_admin,
         )
     )
 
@@ -272,6 +288,7 @@ async def _authorize_resource(
     resource: ResourceRecord,
     share: AuthzShare | None = None,
     subject_user_id: UUID | None = None,
+    audit_session: AsyncSession | None = None,
 ) -> None:
     try:
         authz = get_authorization_service()
@@ -305,6 +322,7 @@ async def _authorize_resource(
             recipient_scope=share.scope if share else None,
             recipient_id=share.target_id if share else None,
             subject_user_id=subject_user_id,
+            audit_session=audit_session,
         )
     except HTTPException as exc:
         raise deny_to_404(exc, detail="Resource not found") from exc
@@ -499,17 +517,25 @@ async def _share_visibility_predicate(session: DbSession, user: User) -> ColumnE
 async def create_share(payload: ShareCreate, current_user: CurrentActiveUser, session: DbSession) -> ShareRead:
     """Create one canonical grant after resource and recipient authorization."""
     await _collaboration_contract(required=payload.scope in {ShareScope.USER.value, ShareScope.TEAM.value})
-    try:
-        resource = await resolve_resource_for_share(
-            session,
-            resource_type=payload.resource_type,
-            resource_id=payload.resource_id,
-        )
-    except ShareManagementError as exc:
-        _raise_share_error(exc)
-    await _authorize_resource(current_user=current_user, action=ShareAction.CREATE, resource=resource)
 
     async def operation(_attempt: int):
+        # A SQLite lock retry starts a fresh transaction. Re-resolve and
+        # re-authorize here so neither the policy snapshot nor a durable
+        # decision row belongs to the transaction that was rolled back.
+        try:
+            resource = await resolve_resource_for_share(
+                session,
+                resource_type=payload.resource_type,
+                resource_id=payload.resource_id,
+            )
+        except ShareManagementError as exc:
+            _raise_share_error(exc)
+        await _authorize_resource(
+            current_user=current_user,
+            action=ShareAction.CREATE,
+            resource=resource,
+            audit_session=session,
+        )
         result = await create_share_transaction(
             session,
             actor_id=current_user.id,
@@ -723,13 +749,23 @@ async def update_share(
     if_match: Annotated[str | None, Header(alias="If-Match")] = None,
 ) -> ShareRead:
     try:
-        stored, resource = await get_share_for_authorization(session, share_id)
+        stored, _ = await get_share_for_authorization(session, share_id)
     except ShareManagementError as exc:
         _raise_share_error(exc)
-    await _authorize_resource(current_user=current_user, action=ShareAction.UPDATE, resource=resource, share=stored)
     contract = await _collaboration_contract(required=stored.scope in {ShareScope.USER.value, ShareScope.TEAM.value})
 
     async def operation(_attempt: int):
+        try:
+            current_share, resource = await get_share_for_authorization(session, share_id)
+        except ShareManagementError as exc:
+            _raise_share_error(exc)
+        await _authorize_resource(
+            current_user=current_user,
+            action=ShareAction.UPDATE,
+            resource=resource,
+            share=current_share,
+            audit_session=session,
+        )
         result = await update_share_transaction(
             session,
             actor_id=current_user.id,
@@ -768,13 +804,23 @@ async def delete_share(
     if_match: Annotated[str | None, Header(alias="If-Match")] = None,
 ) -> None:
     try:
-        stored, resource = await get_share_for_authorization(session, share_id)
+        stored, _ = await get_share_for_authorization(session, share_id)
     except ShareManagementError as exc:
         _raise_share_error(exc)
-    await _authorize_resource(current_user=current_user, action=ShareAction.DELETE, resource=resource, share=stored)
     contract = await _collaboration_contract(required=stored.scope in {ShareScope.USER.value, ShareScope.TEAM.value})
 
     async def operation(_attempt: int):
+        try:
+            current_share, resource = await get_share_for_authorization(session, share_id)
+        except ShareManagementError as exc:
+            _raise_share_error(exc)
+        await _authorize_resource(
+            current_user=current_user,
+            action=ShareAction.DELETE,
+            resource=resource,
+            share=current_share,
+            audit_session=session,
+        )
         result = await delete_share_transaction(
             session,
             actor_id=current_user.id,

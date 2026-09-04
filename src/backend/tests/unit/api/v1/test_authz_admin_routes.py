@@ -174,7 +174,8 @@ def native_team_route_unit_seams(monkeypatch):
     deliberately tiny session doubles, so replace only the new transactional
     service boundary and capability probe here.
     """
-    from langflow.api.v1 import authz_me, authz_teams
+    from langflow.api.v1 import authz_me, authz_role_assignments, authz_roles, authz_teams
+    from langflow.services.authorization import guards
     from langflow.services.authorization.team_management import TeamManagementError
     from lfx.services.authorization import AuthorizationMutation, AuthorizationMutationKind
 
@@ -202,6 +203,9 @@ def native_team_route_unit_seams(monkeypatch):
 
     async def serialize_member(_session, member):
         return member
+
+    async def skip_guard_audit(**_kwargs):
+        return None
 
     async def patch_team(session, *, actor, team_id, patch):
         team = await session.get(authz_teams.AuthzTeam, team_id)
@@ -279,6 +283,9 @@ def native_team_route_unit_seams(monkeypatch):
     monkeypatch.setattr(authz_teams, "remove_member_transaction", remove_member)
     monkeypatch.setattr(authz_me, "load_active_user", load_active_user)
     monkeypatch.setattr(authz_me, "_derive_resource_capabilities", empty_capabilities)
+    monkeypatch.setattr(guards, "_audit_guard_decision", skip_guard_audit)
+    for module in (authz_roles, authz_role_assignments, authz_teams):
+        monkeypatch.setattr(module, "audit_decision", skip_guard_audit)
 
 
 def _make_role_row(

@@ -5,7 +5,7 @@ import io
 import threading
 import zipfile
 from collections.abc import Collection
-from typing import Annotated
+from typing import Annotated, cast
 from uuid import UUID
 
 import orjson
@@ -14,6 +14,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi_pagination import Page, Params
 from fastapi_pagination.ext.sqlmodel import apaginate
 from lfx.log.logger import logger
+from lfx.services.authorization.base import ShareRuleSnapshot
 from lfx.services.cache.utils import CACHE_MISS
 from lfx.services.catalog_policy import CatalogPolicySnapshot
 from lfx.utils.flow_validation import (
@@ -460,7 +461,7 @@ async def read_flows(
         default_folder_id = default_folder.id if default_folder else None
 
         starter_folder = (
-            await session.exec(select(Folder).where(Folder.name == STARTER_FOLDER_NAME, Folder.user_id.is_(None)))
+            await session.exec(select(Folder).where(Folder.name == STARTER_FOLDER_NAME, col(Folder.user_id).is_(None)))
         ).first()
         starter_folder_id = starter_folder.id if starter_folder else None
 
@@ -515,7 +516,7 @@ async def read_flows(
         # `shared_only` means readable resources owned by somebody else; it is
         # not a separate persistence path and cannot surface null-owner rows.
         if shared_only:
-            stmt = stmt.where(Flow.user_id.is_not(None), Flow.user_id != current_user.id)
+            stmt = stmt.where(col(Flow.user_id).is_not(None), Flow.user_id != current_user.id)
 
         if remove_example_flows:
             stmt = stmt.where(Flow.folder_id != starter_folder_id)
@@ -548,29 +549,31 @@ async def read_flows(
                 )
             if header_flows:
                 # Convert to FlowHeader objects and compress the response
-                owner_ids = {flow.user_id for flow in flows if flow.user_id is not None}
-                owners_by_id: dict[UUID, str] = {}
-                if owner_ids:
-                    owners_by_id = dict(
-                        (await session.exec(select(User.id, User.username).where(col(User.id).in_(owner_ids)))).all()
+                header_owner_ids = {flow.user_id for flow in flows if flow.user_id is not None}
+                header_owners_by_id: dict[UUID, str] = {}
+                if header_owner_ids:
+                    header_owners_by_id = dict(
+                        (
+                            await session.exec(select(User.id, User.username).where(col(User.id).in_(header_owner_ids)))
+                        ).all()
                     )
                 flow_headers = []
                 for flow in flows:
                     header = FlowHeader.model_validate(flow, from_attributes=True)
-                    header.owner_username = owners_by_id.get(flow.user_id)
+                    header.owner_username = header_owners_by_id.get(flow.user_id)
                     header.is_owner = flow.user_id == current_user.id
                     flow_headers.append(header)
                 return compress_response(flow_headers)
 
             # Convert to FlowRead while session is still active to avoid detached instance errors
-            owner_ids = {flow.user_id for flow in flows if flow.user_id is not None}
-            owners_by_id: dict[UUID, str] = {}
-            if owner_ids:
-                owners_by_id = dict(
-                    (await session.exec(select(User.id, User.username).where(col(User.id).in_(owner_ids)))).all()
+            flow_owner_ids = {flow.user_id for flow in flows if flow.user_id is not None}
+            flow_owners_by_id: dict[UUID, str] = {}
+            if flow_owner_ids:
+                flow_owners_by_id = dict(
+                    (await session.exec(select(User.id, User.username).where(col(User.id).in_(flow_owner_ids)))).all()
                 )
             flow_reads = [
-                flow_read_for_actor(flow, current_user.id, owner_username=owners_by_id.get(flow.user_id))
+                flow_read_for_actor(flow, current_user.id, owner_username=flow_owners_by_id.get(flow.user_id))
                 for flow in flows
             ]
             return compress_response(flow_reads)
@@ -601,14 +604,14 @@ async def read_flows(
                 owner_extractor=lambda flow: flow.user_id,
                 act=FlowAction.READ,
             )
-        owner_ids = {flow.user_id for flow in page.items if flow.user_id is not None}
-        owners_by_id: dict[UUID, str] = {}
-        if owner_ids:
-            owners_by_id = dict(
-                (await session.exec(select(User.id, User.username).where(col(User.id).in_(owner_ids)))).all()
+        page_owner_ids = {flow.user_id for flow in page.items if flow.user_id is not None}
+        page_owners_by_id: dict[UUID, str] = {}
+        if page_owner_ids:
+            page_owners_by_id = dict(
+                (await session.exec(select(User.id, User.username).where(col(User.id).in_(page_owner_ids)))).all()
             )
         page.items = [
-            flow_read_for_actor(flow, current_user.id, owner_username=owners_by_id.get(flow.user_id))
+            flow_read_for_actor(flow, current_user.id, owner_username=page_owners_by_id.get(flow.user_id))
             for flow in page.items
         ]
         return page  # noqa: TRY300 — final return inside try matches the existing style of this handler
@@ -731,7 +734,7 @@ async def update_flow(
         requested_folder_id = flow.folder_id
         target_workspace_id, target_folder_id = await _resolve_flow_destination(
             session,
-            db_flow.user_id,
+            cast(UUID, db_flow.user_id),
             requested_folder_id,
             fallback_folder_id=db_flow.folder_id,
             reject_invalid=requested_folder_id is not None,
@@ -751,6 +754,7 @@ async def update_flow(
                     workspace_id=target_workspace_id,
                     folder_id=target_folder_id,
                     folder_user_id=await destination_folder_owner_id(session, target_folder_id),
+                    audit_session=session,
                 )
             except HTTPException as exc:
                 raise deny_to_404(exc, detail="Flow not found") from exc
@@ -789,6 +793,7 @@ async def update_flow(
                     flow_user_id=db_flow_for_attempt.user_id,
                     workspace_id=db_flow_for_attempt.workspace_id,
                     folder_id=db_flow_for_attempt.folder_id,
+                    audit_session=session,
                 )
             except HTTPException as exc:
                 raise deny_to_404(exc, detail="Flow not found") from exc
@@ -814,6 +819,7 @@ async def update_flow(
                         workspace_id=attempt_target_workspace_id,
                         folder_id=attempt_target_folder_id,
                         folder_user_id=await destination_folder_owner_id(session, attempt_target_folder_id),
+                        audit_session=session,
                     )
                 except HTTPException as exc:
                     raise deny_to_404(exc, detail="Flow not found") from exc
@@ -927,6 +933,7 @@ async def upsert_flow(
                     flow_user_id=existing_flow.user_id,
                     workspace_id=existing_flow.workspace_id,
                     folder_id=existing_flow.folder_id,
+                    audit_session=session,
                 )
             except HTTPException as exc:
                 raise deny_to_404(exc, detail="Flow not found") from exc
@@ -962,6 +969,7 @@ async def upsert_flow(
                         workspace_id=target_workspace_id,
                         folder_id=target_folder_id,
                         folder_user_id=await destination_folder_owner_id(session, target_folder_id),
+                        audit_session=session,
                     )
                 except HTTPException as exc:
                     raise deny_to_404(exc, detail="Flow not found") from exc
@@ -993,6 +1001,7 @@ async def upsert_flow(
                         flow_user_id=existing_flow_for_attempt.user_id,
                         workspace_id=existing_flow_for_attempt.workspace_id,
                         folder_id=existing_flow_for_attempt.folder_id,
+                        audit_session=session,
                     )
                 except HTTPException as exc:
                     raise deny_to_404(exc, detail="Flow not found") from exc
@@ -1024,6 +1033,7 @@ async def upsert_flow(
                             workspace_id=attempt_target_workspace_id,
                             folder_id=attempt_target_folder_id,
                             folder_user_id=await destination_folder_owner_id(session, attempt_target_folder_id),
+                            audit_session=session,
                         )
                     except HTTPException as exc:
                         raise deny_to_404(exc, detail="Flow not found") from exc
@@ -1065,6 +1075,7 @@ async def upsert_flow(
                 workspace_id=flow.workspace_id,
                 folder_id=flow.folder_id,
                 folder_user_id=await destination_folder_owner_id(session, flow.folder_id),
+                audit_session=session,
             )
             precondition_required = await _conditional_write_contract()
             _check_stable_put_creation(
@@ -1114,8 +1125,8 @@ async def delete_flow(
     """Delete a flow."""
     actor = UserRead.model_validate(current_user, from_attributes=True)
     target_flow_id = flow_id
-    flow_owner_ids: dict[UUID, UUID] = {target_flow_id: flow.user_id}
-    removed_share_rules = ()
+    flow_owner_ids: dict[UUID, UUID] = {target_flow_id: cast(UUID, flow.user_id)}
+    removed_share_rules: tuple[ShareRuleSnapshot, ...] = ()
     precondition_required = await _conditional_write_contract()
 
     async def _delete_attempt(_attempt: int) -> None:
@@ -1133,6 +1144,7 @@ async def delete_flow(
                 flow_user_id=retry_target.user_id,
                 workspace_id=retry_target.workspace_id,
                 folder_id=retry_target.folder_id,
+                audit_session=session,
             )
             _check_flow_revision(retry_target, if_match=if_match, required=precondition_required)
             flow_owner_ids[retry_target.id] = retry_target.user_id
@@ -1207,6 +1219,7 @@ async def create_flows(
             workspace_id=flow.workspace_id,
             folder_id=flow.folder_id,
             folder_user_id=await destination_folder_owner_id(session, flow.folder_id),
+            audit_session=session,
         )
     # Credential persistence starts only after the entire destination and
     # policy set is authorized.
@@ -1359,7 +1372,7 @@ async def upload_file(
         await _canonicalize_flow_destination(
             session,
             flow,
-            existing_flow.user_id if existing_flow is not None else current_user.id,
+            cast(UUID, existing_flow.user_id) if existing_flow is not None else current_user.id,
             fallback_folder_id=fallback_folder_id,
             reject_invalid=flow.folder_id is not None,
             widen_for_authz=True,
@@ -1372,6 +1385,7 @@ async def upload_file(
                 workspace_id=flow.workspace_id,
                 folder_id=flow.folder_id,
                 folder_user_id=await destination_folder_owner_id(session, flow.folder_id),
+                audit_session=session,
             )
         else:
             destination_changed = (
@@ -1391,6 +1405,7 @@ async def upload_file(
                     flow_user_id=existing_flow.user_id,
                     workspace_id=existing_flow.workspace_id,
                     folder_id=existing_flow.folder_id,
+                    audit_session=session,
                 )
                 if destination_changed:
                     await ensure_flow_permission(
@@ -1399,6 +1414,7 @@ async def upload_file(
                         workspace_id=flow.workspace_id,
                         folder_id=flow.folder_id,
                         folder_user_id=await destination_folder_owner_id(session, flow.folder_id),
+                        audit_session=session,
                     )
             except HTTPException as exc:
                 raise deny_to_404(exc, detail="Flow not found") from exc
@@ -1493,9 +1509,9 @@ async def delete_multiple_flows(
     precondition_required = await _conditional_write_contract()
     try:
         authorized_flow_owner_ids: dict[UUID, UUID] = {}
-        removed_share_rules = ()
+        removed_share_rules: tuple[ShareRuleSnapshot, ...] = ()
 
-        async def _delete_operation() -> int:
+        async def _delete_operation(*, allow_missing: bool) -> int:
             nonlocal removed_share_rules
             authorized_flow_owner_ids.clear()
             removed_share_rules = ()
@@ -1511,7 +1527,7 @@ async def delete_multiple_flows(
             else:
                 stmt = base_stmt.where(Flow.user_id == actor.id)
             flows_to_delete = list((await db.exec(stmt)).all())
-            if {flow.id for flow in flows_to_delete} != set(flow_ids):
+            if not allow_missing and {flow.id for flow in flows_to_delete} != set(flow_ids):
                 raise HTTPException(status_code=404, detail="One or more flows were not found.")
             for flow in flows_to_delete:
                 try:
@@ -1522,6 +1538,7 @@ async def delete_multiple_flows(
                         flow_user_id=flow.user_id,
                         workspace_id=flow.workspace_id,
                         folder_id=flow.folder_id,
+                        audit_session=db,
                     )
                 except HTTPException as exc:
                     raise deny_to_404(exc, detail="Flow not found") from exc
@@ -1546,11 +1563,17 @@ async def delete_multiple_flows(
             await db.flush()
             return len(flows_to_delete)
 
-        async def _delete_attempt(_attempt: int) -> int:
+        async def _delete_attempt(attempt: int) -> int:
+            async def operation() -> int:
+                # A row seen on the first attempt may be deleted concurrently while
+                # the stale SQLite transaction is rolled back. Retrying the remaining
+                # authorized rows is idempotent; an initially missing row still 404s.
+                return await _delete_operation(allow_missing=attempt > 0)
+
             return await retry_flow_operation_on_deployment_guard(
                 db=db,
                 flow_owner_ids=authorized_flow_owner_ids,
-                operation=_delete_operation,
+                operation=operation,
             )
 
         deleted_count = await run_with_lock_retry(
@@ -1697,7 +1720,7 @@ async def read_basic_examples(
             try:
                 starter_folder = (
                     await session.exec(
-                        select(Folder).where(Folder.name == STARTER_FOLDER_NAME, Folder.user_id.is_(None))
+                        select(Folder).where(Folder.name == STARTER_FOLDER_NAME, col(Folder.user_id).is_(None))
                     )
                 ).first()
 

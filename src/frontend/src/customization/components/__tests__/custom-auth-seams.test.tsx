@@ -145,6 +145,23 @@ describe("OSS auth customization seams", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it("does not initialize project authorization hooks for unsupported resources", () => {
+    mockCapabilities.mockClear();
+    mockPermissions.mockClear();
+
+    const { container } = render(
+      <CustomResourceShareAction
+        resourceId="knowledge-base-1"
+        resourceType="knowledge_base"
+        resourceName="Knowledge base one"
+      />,
+    );
+
+    expect(container).toBeEmptyDOMElement();
+    expect(mockCapabilities).not.toHaveBeenCalled();
+    expect(mockPermissions).not.toHaveBeenCalled();
+  });
+
   it("renders project Share for an authorized owner", () => {
     mockCapabilities.mockReturnValue({
       data: {

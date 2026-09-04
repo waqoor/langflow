@@ -55,6 +55,11 @@ jest.mock(
 jest.mock("@/constants/constants", () => ({ IS_MAC: false }));
 jest.mock("@/contexts/permissionsContext", () => ({
   PermissionsProvider: ({ children }) => <>{children}</>,
+  useResourceCapability: () => ({
+    allowed: true,
+    isLoading: false,
+    isUnavailable: false,
+  }),
 }));
 jest.mock("@/controllers/API/queries/folders/use-get-folder", () => ({
   useGetFolderQuery: () => mockFolderQuery,

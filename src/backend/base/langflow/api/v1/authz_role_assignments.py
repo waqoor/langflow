@@ -20,7 +20,7 @@ from lfx.services.authorization import (
     AuthorizationMutationRejected,
 )
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import select
+from sqlmodel import col, select
 
 from langflow.api.utils import CurrentActiveUser, DbSession
 from langflow.api.v1.schemas.authz_role_assignments import (
@@ -101,12 +101,12 @@ async def _assignment_reads(session, assignments: list[AuthzRoleAssignment]) -> 
     grants = (
         await session.exec(
             select(AuthzRoleAssignmentGrant)
-            .where(AuthzRoleAssignmentGrant.assignment_id.in_(assignment_ids))
+            .where(col(AuthzRoleAssignmentGrant.assignment_id).in_(assignment_ids))
             .order_by(
-                AuthzRoleAssignmentGrant.assignment_id,
-                AuthzRoleAssignmentGrant.source_kind,
-                AuthzRoleAssignmentGrant.provider_id,
-                AuthzRoleAssignmentGrant.external_group,
+                col(AuthzRoleAssignmentGrant.assignment_id),
+                col(AuthzRoleAssignmentGrant.source_kind),
+                col(AuthzRoleAssignmentGrant.provider_id),
+                col(AuthzRoleAssignmentGrant.external_group),
             )
         )
     ).all()
@@ -125,7 +125,7 @@ async def _assignment_reads(session, assignments: list[AuthzRoleAssignment]) -> 
 
 def _assignment_match(payload: RoleAssignmentCreate):
     domain_match = (
-        AuthzRoleAssignment.domain_id.is_(None)
+        col(AuthzRoleAssignment.domain_id).is_(None)
         if payload.domain_id is None
         else AuthzRoleAssignment.domain_id == payload.domain_id
     )
@@ -174,7 +174,11 @@ async def list_assignments(
         stmt = stmt.where(AuthzRoleAssignment.domain_type == domain_type)
     if domain_id is not None:
         stmt = stmt.where(AuthzRoleAssignment.domain_id == domain_id)
-    stmt = stmt.order_by(AuthzRoleAssignment.assigned_at.desc(), AuthzRoleAssignment.id).offset(offset).limit(limit)
+    stmt = (
+        stmt.order_by(col(AuthzRoleAssignment.assigned_at).desc(), col(AuthzRoleAssignment.id))
+        .offset(offset)
+        .limit(limit)
+    )
     rows = (await session.exec(stmt)).all()
     return await _assignment_reads(session, list(rows))
 

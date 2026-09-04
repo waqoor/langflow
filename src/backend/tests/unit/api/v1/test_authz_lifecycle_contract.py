@@ -512,6 +512,7 @@ async def test_user_patch_lock_kind_is_advisory_before_state_read(monkeypatch):
         password="hashed",  # noqa: S106  # pragma: allowlist secret
     )
     session = AsyncMock()
+    session.add = Mock()
 
     async def update_user(_target, _update, _session):
         events.append("mutate")

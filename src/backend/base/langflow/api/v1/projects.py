@@ -20,11 +20,12 @@ from fastapi.encoders import jsonable_encoder
 from fastapi_pagination import Page, Params
 from fastapi_pagination.ext.sqlmodel import apaginate
 from lfx.log.logger import logger
+from lfx.services.authorization.base import ShareRuleSnapshot
 from lfx.services.mcp_composer.service import MCPComposerService
 from lfx.utils.util_strings import escape_like_pattern
 from sqlalchemy import literal, null, or_, update
 from sqlalchemy.orm import selectinload
-from sqlmodel import select
+from sqlmodel import col, select
 
 from langflow.api.utils import (
     CurrentActiveUser,
@@ -132,7 +133,7 @@ def _check_project_revision(project: Folder, *, if_match: str | None, required: 
     try:
         require_revision_precondition(
             resource_type="project",
-            resource_id=project.id,
+            resource_id=cast(UUID, project.id),
             current_revision=project.edit_revision,
             if_match=if_match,
             required=required,
@@ -178,7 +179,7 @@ def _check_existing_project_creation_guard(project: Folder, if_none_match: str |
     if if_none_match is None:
         return
     supplied = if_none_match.strip()
-    current = strong_etag("project", project.id, project.edit_revision)
+    current = strong_etag("project", cast(UUID, project.id), project.edit_revision)
     if supplied == "*" or current in {tag.strip() for tag in supplied.split(",")}:
         raise HTTPException(
             status_code=status.HTTP_412_PRECONDITION_FAILED,
@@ -435,9 +436,9 @@ async def read_projects(
             stmt = select(Folder).where(or_(owned_clause, Folder.user_id == None))  # noqa: E711
         # Exclude the reserved ownerless starter row before pagination so both
         # page items and totals describe the same authorized resource set.
-        stmt = stmt.where(or_(Folder.name != STARTER_FOLDER_NAME, Folder.user_id.is_not(None)))
+        stmt = stmt.where(or_(Folder.name != STARTER_FOLDER_NAME, col(Folder.user_id).is_not(None)))
         if shared_only:
-            stmt = stmt.where(Folder.user_id.is_not(None), Folder.user_id != current_user.id)
+            stmt = stmt.where(col(Folder.user_id).is_not(None), Folder.user_id != current_user.id)
 
         # Shared-resource discovery must be bounded and stable across pages. The
         # default remains the historical list response for existing callers;
@@ -943,7 +944,7 @@ async def _apply_project_update(
 
         rows_by_destination: dict[UUID, list[Flow]] = {}
         for row in flow_rows:
-            rows_by_destination.setdefault(destination_by_id[row.id].id, []).append(row)
+            rows_by_destination.setdefault(cast(UUID, destination_by_id[row.id].id), []).append(row)
         for destination_id, rows in rows_by_destination.items():
             await ensure_flow_moves_allowed(
                 session,
@@ -1339,7 +1340,7 @@ async def delete_project(
                 ) from exc
         return list(children)
 
-    removed_share_rules = ()
+    removed_share_rules: tuple[ShareRuleSnapshot, ...] = ()
 
     def _make_delete_operation(target: Folder, children: list[Flow]):
         async def _delete_project_operation() -> None:
