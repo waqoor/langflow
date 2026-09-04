@@ -3,10 +3,10 @@
 **Canonical repository:** `https://github.com/waqoor/langflow` \
 **Delivery branch:** `feat/auth-team-sharing` \
 **Fork-main base:** `e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5` \
-**Tested implementation commit:** `dbb0c20e541aade230f85c564e1d74b28e628c23` \
-**Tested implementation tree:** `6127bd2abc7d0fa5e0b3dd2ce3fb8fd9285c51a4` \
+**Tested implementation commit:** `170dd9e1d2e5024d484769515b7bb2c511f6ef77` \
+**Tested implementation tree:** `ae6fbd4713f182f55c4b77f13a73320e84cb2002` \
 **Migration:** `bf6c22022777`, down revision `c6d8e0f2a4b7`, phase `MIGRATE` \
-**Verification date:** September 4, 2026 \
+**Verification date:** September 5, 2026 \
 **Status:** Local implementation candidate complete. Hosted Python/architecture matrices and fork Actions remain explicitly unverified because this delivery does not push, merge, deploy, or change external settings.
 
 ## Scope and delivery boundary
@@ -15,7 +15,7 @@ The sole implementation authority is `auth_share_implementation_plan.md`, revisi
 
 - `origin` is the user fork, `https://github.com/waqoor/langflow.git`.
 - `upstream` is read-only for this work: fetch is `https://github.com/langflow-ai/langflow.git` and push is disabled.
-- The tested implementation is 12 commits ahead of the fork-main base and zero commits behind it.
+- The tested implementation is 15 commits ahead of the fork-main base and zero commits behind it.
 - No parallel identity system, policy database, API version, resource-copy path, or shadow authorization runtime was added.
 - No push, pull request, merge to `main`, release, deployment, production setting change, or production credential use was performed.
 
@@ -50,33 +50,41 @@ The sole implementation authority is `auth_share_implementation_plan.md`, revisi
 - Workflow and project share-dialog state is owned by the persistent toolbar/card/sidebar surface. The originating Radix menu now closes before the modal opens, so its portalled menu is not left exposed outside a landmark behind the dialog.
 - Focused Jest/axe regression coverage exercises both the unsafe node ID and the dropdown-to-dialog lifecycle.
 
+### Final consistency and Windows acceptance repairs in `170dd9e1d2`
+
+- Team, user-lifecycle, and share writers now follow the documented cross-entity order: plugin preflight, UUID-sorted users, UUID-sorted teams/resources, and then memberships/shares. Unlocked identifier hints are re-read under canonical locks and boundedly replayed if the lock set changed.
+- SQLite writers establish the database-wide writer transaction before authoritative invariant reads. PostgreSQL locked ORM reads use `populate_existing` so an identity-map object loaded for the preliminary hint cannot bypass the post-lock canonical state.
+- A stale share whose user or team recipient is no longer eligible remains revocable, while create/update continue to reject an ineligible recipient. Multi-resource cleanup locks all share rows once in UUID order.
+- The Share dialog and Team details were split into focused subcomponents below the repository complexity threshold. Team-member pagination uses a 51-row lookahead for 50-row pages and resets when the selected team changes; inline mutation errors are announced.
+- Vite excludes generated Playwright result, report, coverage, and blob directories from its watcher. This prevents Windows `EBUSY` crashes when Chromium holds a trace file open, with a cross-platform path-policy regression test.
+
 ## Verification results
 
-All PASS results apply to this branch audit. Where a check predates the last small retry-test delta or required a split run, that boundary is stated rather than hidden.
+All PASS results apply to this branch audit. Where an earlier broad result remains valid or a Windows runner required a split run, that boundary is stated rather than hidden.
 
 | Check | Status | Actual result and boundary |
 |---|---|---|
 | Consolidated backend authorization/API suite | PASS | 504 tests passed across the SQLite migration, authorization API/service/policy/visibility, and deployment-route selection; 7 upstream warnings. The final share-route regression file separately passed 57 tests. |
-| Exact backend CI selection on SQLite | PASS (split) | 205 passed with the Chroma case deselected, then the isolated Chroma case passed 1/1 in 46.88s. All 206 collected functional cases pass. A combined Windows process can time out after assertions while Chroma releases a temporary SQLite handle. |
+| Exact backend CI selection on SQLite | PASS | All 207 collected tests passed together with 1 upstream warning in 132.22s against a fresh SQLite database. |
 | Full affected route baselines | PASS | 249 passed and 1 intentional skip across flow, project, user, secrets, and API-utility coverage. The constituent flow/project/user files also passed in their focused runs. |
 | Pure policy matrix | PASS | 112 passed. |
 | LFX default authorization contract | PASS | 17 passed. |
-| PostgreSQL 16.15 CI selection | PASS | The exact seven-file backend CI selection passed 203 tests with 1 upstream warning in 117.51s against a disposable PostgreSQL 16.15 database. The final commit after this run contains frontend-only accessibility changes. |
+| PostgreSQL 16.15 CI selection | PASS (Windows split) | The same seven-file selection passed 206 tests with 1 deselection and 1 upstream warning in 103.61s against a fresh disposable PostgreSQL 16.15 database; the one Chroma-enabled case passed separately 1/1 in 22.52s. Thus all 207 collected cases pass, including PostgreSQL roster concurrency and migration round-trip coverage. The combined Windows process can retain a Chroma SQLite handle during teardown; this platform boundary is not represented as a product assertion failure. |
 | CI contract scripts | PASS | Authorization endpoint and execution-principal matrix checkers passed; their contract tests passed 24/24. Router trust validation also passed. |
-| Ruff | PASS | Format check reported 75 files already formatted; lint reported no issues. |
-| Scoped Mypy | PASS | 51 changed production files passed using explicit package bases, the backend/LFX source paths, and skipped import traversal. |
+| Ruff | PASS | The final 8-file backend audit delta was already formatted and reported no lint issues. Earlier broad changed-backend coverage remains green. |
+| Scoped Mypy | PASS | The final 5 changed production backend files passed using explicit package bases, the backend/LFX source paths, and skipped import traversal. Earlier broad changed-production coverage remains green. |
 | Raw monorepo Mypy invocation | BASELINE, NOT A FEATURE GATE | A naive invocation followed the entire monorepo and emitted 3,741 existing optional-dependency/import diagnostics. It was replaced by the scoped changed-production-file gate above, not represented as a feature regression. |
-| Frontend Biome | PASS | The final committed branch surface contains 105 frontend source/config files; all 105 passed the repository-pinned Biome check without fixes. |
-| Frontend TypeScript | BASELINE | Full TSC reported 247 repository diagnostics and zero in branch-changed files. |
-| Affected frontend Jest | PASS | All 30 Jest files changed by the final commit range passed: 30 suites, 234 tests, 0 failures/skips. This includes Share dialog, menu lifecycle, node-field ARIA, Teams, permissions, autosave, and folder mutation coverage. A focused post-commit recheck of the three accessibility seam files passed 20/20. |
-| Full frontend Jest | BASELINE | 664 suites passed and 2 failed; 7,083 tests passed and 2 failed. The two failures are pre-existing locale/timezone expectations in `sort-sender-messages.test.ts` and `dateTime.test.ts`. |
-| Playwright utilities | PASS | 68/68 passed, including authz mode and report-manifest validation. |
-| Frontend production build | PASS | 8,019 modules transformed; the final build completed in 1m36s with existing Tailwind/chunk warnings. |
+| Frontend Biome | PASS | All 116 frontend source/config files in the tested feature surface passed the repository-pinned Biome check without fixes. Eight unrelated user-owned working-tree files were preserved and excluded from the implementation commit. |
+| Frontend TypeScript | BASELINE | Full TSC reproduced exactly 247 repository diagnostics in 83 files and none in the final audit delta. |
+| Affected frontend Jest | PASS | All 30 affected Jest files passed: 30 suites, 236 tests, 0 failures/skips. This includes Share dialog, menu lifecycle, node-field ARIA, Teams/pagination, permissions, autosave, and folder mutation coverage. Locale-key parity also passed in the focused recheck. |
+| Full frontend Jest | BASELINE | 664 suites passed and 3 failed; 7,089 tests passed and 3 failed. All three failures are outside the feature diff: two existing locale/timezone expectations in `sort-sender-messages.test.ts` and `dateTime.test.ts`, plus `FormKeyRender.test.tsx`, whose active-preset test derives a UTC date while the implementation intentionally derives a local date. |
+| Playwright utilities | PASS | 69/69 passed, including authz mode, report-manifest validation, and the generated-artifact watcher policy. |
+| Frontend production build | PASS | 8,024 modules transformed; the post-repair build completed in 1m28s with existing Tailwind/chunk warnings. |
 | Authz Playwright discovery | PASS | Exactly 8 `@authz` Chromium tests were collected from one file. |
-| Authz Playwright execution and IBM scan | PASS | All 8 journeys passed in 6.3m with the native enforcer, distinct users, one worker, zero retries, and strict IBM assertions. The embedded report records 8 expected outcomes, one attempt per journey, and retry index 0. Five named IBM reports contain zero violations. |
+| Authz Playwright execution and IBM scan | PASS | All 8 journeys passed in 8.7m with the native enforcer, a fresh database, distinct users, one worker, zero retries, full traces, and strict IBM assertions. The JSON report gate confirmed 8 expected outcomes, one attempt per journey, and zero failures/flaky results. Five named IBM reports contain zero violations and 12,762 passing checks. |
 | Canonical OpenAPI | PASS | Generation completed without tracked drift; 12 authz route groups are present. |
-| Documentation production build | PASS | A clean default-worker `npm run build` generated the static site after the inherited shell-only `DEBUG=release` variable was removed for the child process. Existing unresolved workflow-schema references, browser-data age, sampler, and historical-anchor warnings remain non-fatal repository baselines. |
-| Managed repository hooks | PASS WITH WINDOWS WRAPPERS | Case, EOF, line ending, whitespace, Ruff, migration/router, and other applicable hooks passed. The secret baseline's one existing finding moved from line 76 to 72; a normalized-baseline scan passed. Native pinned Biome commands passed because the Bash wrapper stalls on this Windows host. No hook configuration was weakened. |
+| Documentation production build | PASS | A one-worker, retained-server-bundle `npm run build` generated the static site after the inherited shell-only `DEBUG` variable was removed for the child process. Existing unresolved workflow-schema references, browser-data age, sampler, and historical-anchor warnings remain non-fatal repository baselines. |
+| Managed repository hooks | PASS WITH WINDOWS WRAPPERS | Staged case, EOF, line-ending, whitespace, Ruff, router-trust, and secret hooks passed. The Bash-based local Biome hook again stalled on Windows and was interrupted only after the equivalent repository-pinned native Biome check passed all 116 files; the two Biome hook IDs were skipped for the commit on that evidence. No hook configuration was weakened. |
 | `git diff --check` | PASS | The implementation index and commit range are whitespace-clean. |
 | `actionlint` | NOT RUN | The binary is unavailable locally. Repository CI contract tests and YAML parsing provide partial local coverage, but are not represented as `actionlint`. |
 | Python 3.10 local runtime | NOT RUN | No local interpreter was available; the fork workflow includes Python 3.10. |
@@ -151,29 +159,30 @@ The map identifies primary coverage. It does not inflate parameterized tests int
 
 ## Baseline and runner classification
 
-- The two full-Jest failures are locale/timezone-sensitive baseline assertions, not authorization failures.
-- The full TSC backlog contains no diagnostic in branch-changed files.
+- The three full-Jest failures are date/locale-sensitive baseline assertions in files unchanged by the feature, not authorization failures.
+- The full TSC backlog contains no diagnostic in the final audit delta.
 - The raw Mypy command was over-broad; the 51-file production delta is clean under the repository source layout.
-- The combined Windows RBAC selection can retain a Chroma SQLite handle during teardown. The affected test passes in isolation, so this is recorded as a same-process cleanup limitation rather than an authorization assertion failure.
+- The combined Windows PostgreSQL-mode RBAC selection can retain a Chroma SQLite handle during teardown. The other 206 cases and the affected test pass in split runs, so this is recorded as a same-process cleanup limitation rather than an authorization assertion failure.
+- The first traced browser attempt exposed a Vite watcher crash on a locked Playwright `.network` file. The generated-artifact exclusion in `170dd9e1d2` fixed the harness, and the subsequent clean-database run passed all eight journeys with the same full-trace setting.
 - The standard secret hook normalizes all baseline paths to backslashes on this host. The authoritative baseline received only the valid line-number update, and an equivalent temporary normalized-baseline scan returned zero.
 - The local pre-commit Bash wrapper for Biome stalls on this Windows host. The same pinned native Biome check and staged lint both returned zero.
-- A default-worker Docusaurus rerun lost `build/__server/server.bundle.js` after successful compilation. The one-worker, retained-bundle rerun completed static generation and broken-anchor validation with exit code zero.
+- A prior default-worker Docusaurus rerun lost `build/__server/server.bundle.js` after successful compilation. The final one-worker, retained-bundle run completed static generation and broken-anchor validation with exit code zero.
 
 ## Migration, API, and immutable manifest
 
 - Migration `bf6c22022777` extends existing tables and does not create parallel team/share models.
 - Upgrade, legacy repair/backfill, metadata parity, constraints, and downgrade are covered on SQLite and PostgreSQL 16.
 - Canonical OpenAPI generation contains capabilities, permissions, recipients, shares, summaries, teams/members, and dynamic resource paths.
-- The implementation changes exactly 211 paths relative to the fork-main base:
+- The tested implementation changes exactly 219 paths relative to the fork-main base:
 
 ```bash
 git diff --name-status \
-  e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5..dbb0c20e541aade230f85c564e1d74b28e628c23
+  e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5..170dd9e1d2e5024d484769515b7bb2c511f6ef77
 ```
 
 Immutable comparison:
 
-`https://github.com/waqoor/langflow/compare/e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5...dbb0c20e541aade230f85c564e1d74b28e628c23`
+`https://github.com/waqoor/langflow/compare/e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5...170dd9e1d2e5024d484769515b7bb2c511f6ef77`
 
 ## Final acceptance boundary
 
