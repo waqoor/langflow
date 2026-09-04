@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from lfx.services.authorization.base import ResourceVisibilityScope
-from sqlalchemy import or_
+from sqlalchemy import or_, update
 from sqlmodel import col, select
 
 from langflow.services.authorization.policy import project_flow_actions, share_actions
@@ -143,9 +143,14 @@ async def load_resource(
     model = _MODEL_BY_RESOURCE.get(resource_type)
     if model is None:
         return None
+    if lock and session.get_bind().dialect.name == "sqlite":
+        # SQLite ignores SELECT FOR UPDATE.  A no-op write establishes its
+        # database-wide write transaction before the canonical resource read,
+        # matching the ordered parent-row lock used by team mutations.
+        await session.exec(update(model).where(model.id == resource_id).values(id=model.id))
     statement = select(model).where(model.id == resource_id)
     if lock:
-        statement = statement.with_for_update()
+        statement = statement.with_for_update().execution_options(populate_existing=True)
     row = (await session.exec(statement)).first()
     if row is None and resource_type == "knowledge_base":
         fallback = select(MemoryBase).where(MemoryBase.id == resource_id)

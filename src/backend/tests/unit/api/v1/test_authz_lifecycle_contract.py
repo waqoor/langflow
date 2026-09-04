@@ -25,12 +25,32 @@ class _FirstResult:
 def isolate_user_route_from_team_lifecycle(monkeypatch):
     """These route-ordering tests isolate the separately tested team repair service."""
     from langflow.api.v1 import users
-    from langflow.services.authorization.team_management import UserTeamLifecycleResult
+    from langflow.services.authorization.team_management import (
+        UserTeamLifecycleLockContext,
+        UserTeamLifecycleLockHint,
+        UserTeamLifecycleResult,
+    )
+    from langflow.services.database.models.user.model import User
+    from sqlmodel import select
 
     async def unchanged_team_state(*_args, **_kwargs):
         return UserTeamLifecycleResult((), (), (), ())
 
+    async def user_only_lock_hint(_session, *, user_id):
+        return UserTeamLifecycleLockHint((), (), (user_id,))
+
+    async def acquire_user_only_lock_context(session, *, user_id, hint):  # noqa: ARG001
+        result = await session.exec(select(User).where(User.id == user_id))
+        target = result.first()
+        return UserTeamLifecycleLockContext(
+            users={user_id: target} if target is not None else {},
+            teams={},
+            members_by_team={},
+        )
+
     monkeypatch.setattr(users, "apply_user_team_lifecycle", unchanged_team_state)
+    monkeypatch.setattr(users, "prepare_user_team_lifecycle_lock_hint", user_only_lock_hint)
+    monkeypatch.setattr(users, "acquire_user_team_lifecycle_locks", acquire_user_only_lock_context)
 
 
 class _LifecycleService:

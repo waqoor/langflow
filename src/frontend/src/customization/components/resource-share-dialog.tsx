@@ -1,8 +1,7 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import ForwardedIconComponent from "@/components/common/genericIconComponent";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,28 +11,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import {
-  useGetAuthorizationCapabilities,
-  useSearchAuthorizationRecipients,
-} from "@/controllers/API/queries/authorization";
-import {
-  useCreateShare,
-  useDeleteShare,
-  useGetShareSummary,
-  useUpdateShare,
-} from "@/controllers/API/queries/shares";
-import type {
-  AuthorizationRecipient,
-  AuthorizationShare,
-  ShareDialogPermission,
-  ShareRecipientType,
-  ShareResourceType,
-} from "@/types/authz";
-import { extractApiErrorMessages } from "@/utils/apiError";
-import { cn } from "@/utils/utils";
+import { useGetAuthorizationCapabilities } from "@/controllers/API/queries/authorization";
+import { useGetShareSummary } from "@/controllers/API/queries/shares";
+import type { ShareResourceType } from "@/types/authz";
+import { ExistingAccessSection } from "./resource-share-dialog/existing-access-section";
+import { ShareRecipientForm } from "./resource-share-dialog/share-recipient-form";
 
 interface ResourceShareDialogProps {
   open: boolean;
@@ -43,170 +25,7 @@ interface ResourceShareDialogProps {
   resourceName?: string;
 }
 
-function useDebouncedValue(value: string, delay = 300): string {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(value), delay);
-    return () => window.clearTimeout(timer);
-  }, [delay, value]);
-  return debounced;
-}
-
-const permissionOptions: ShareDialogPermission[] = ["execute", "write"];
 const directGrantPageSize = 50;
-
-function permissionLabelKey(permission: ShareDialogPermission) {
-  return permission === "execute"
-    ? "sharing.mode.use.label"
-    : "sharing.mode.edit.label";
-}
-
-function permissionDescriptionKey(permission: ShareDialogPermission) {
-  return permission === "execute"
-    ? "sharing.mode.use.description"
-    : "sharing.mode.edit.description";
-}
-
-function preservedPermissionLabelKey(permission: "read" | "admin") {
-  return permission === "read"
-    ? "sharing.mode.read.label"
-    : "sharing.mode.admin.label";
-}
-
-function preservedPermissionDescriptionKey(permission: "read" | "admin") {
-  return permission === "read"
-    ? "sharing.mode.read.description"
-    : "sharing.mode.admin.description";
-}
-
-function GrantRow({
-  grant,
-  resourceType,
-  resourceId,
-}: {
-  grant: AuthorizationShare;
-  resourceType: ShareResourceType;
-  resourceId: string;
-}) {
-  const { t } = useTranslation();
-  const [error, setError] = useState<string | null>(null);
-  const updateShare = useUpdateShare({
-    onError: (requestError) =>
-      setError(extractApiErrorMessages(requestError).join(" ")),
-  });
-  const deleteShare = useDeleteShare({
-    onError: (requestError) =>
-      setError(extractApiErrorMessages(requestError).join(" ")),
-  });
-  const currentPermission = permissionOptions.includes(
-    grant.permission_level as ShareDialogPermission,
-  )
-    ? (grant.permission_level as ShareDialogPermission)
-    : null;
-  const preservedPermission =
-    grant.permission_level === "read" || grant.permission_level === "admin"
-      ? grant.permission_level
-      : null;
-  const target = grant.target_name ?? t("sharing.unknownRecipient");
-
-  const updatePermission = (value: string) => {
-    const permission = value as ShareDialogPermission;
-    if (permission === currentPermission) return;
-    setError(null);
-    updateShare.mutate({
-      shareId: grant.id,
-      revision: grant.revision,
-      resourceType,
-      resourceId,
-      permission,
-    });
-  };
-
-  const permissionPicker = (
-    <RadioGroup
-      className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2"
-      value={currentPermission ?? ""}
-      aria-label={t(
-        currentPermission
-          ? "sharing.permission.for"
-          : "sharing.convertPermission.for",
-        { target },
-      )}
-      data-testid={`share-grant-permission-${grant.id}`}
-      disabled={updateShare.isPending || deleteShare.isPending}
-      onValueChange={updatePermission}
-    >
-      {permissionOptions.map((permission) => (
-        <Label
-          key={permission}
-          className="flex cursor-pointer items-start gap-2 rounded-md border p-2 text-xs"
-        >
-          <RadioGroupItem value={permission} />
-          <span>{t(permissionLabelKey(permission))}</span>
-        </Label>
-      ))}
-    </RadioGroup>
-  );
-
-  return (
-    <li
-      className="rounded-lg border border-border p-3"
-      data-testid={`share-grant-${grant.id}`}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-medium">{target}</div>
-          <Badge variant="secondaryStatic" size="tag" className="mt-1">
-            {grant.scope === "team"
-              ? t("sharing.recipient.team")
-              : t("sharing.recipient.user")}
-          </Badge>
-        </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="text-destructive"
-          loading={deleteShare.isPending}
-          aria-label={t("sharing.revoke.target", { target })}
-          onClick={() => {
-            setError(null);
-            deleteShare.mutate({
-              shareId: grant.id,
-              revision: grant.revision,
-              resourceType,
-              resourceId,
-            });
-          }}
-        >
-          {t("sharing.remove")}
-        </Button>
-      </div>
-      {currentPermission ? (
-        permissionPicker
-      ) : preservedPermission ? (
-        <>
-          <div
-            className="mt-3 rounded-md border bg-muted/30 p-2"
-            data-testid={`preserved-share-permission-${grant.id}`}
-          >
-            <div className="text-xs font-medium">
-              {t(preservedPermissionLabelKey(preservedPermission))}
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t(preservedPermissionDescriptionKey(preservedPermission))}
-            </p>
-          </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t("sharing.convertPermission")}
-          </p>
-          {permissionPicker}
-        </>
-      ) : null}
-      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
-    </li>
-  );
-}
 
 export function ResourceShareDialog({
   open,
@@ -216,17 +35,7 @@ export function ResourceShareDialog({
   resourceName,
 }: ResourceShareDialogProps) {
   const { t } = useTranslation();
-  const searchId = useId();
-  const [recipientType, setRecipientType] =
-    useState<ShareRecipientType>("user");
-  const [search, setSearch] = useState("");
-  const [selectedRecipient, setSelectedRecipient] =
-    useState<AuthorizationRecipient | null>(null);
-  const [permission, setPermission] =
-    useState<ShareDialogPermission>("execute");
   const [grantOffset, setGrantOffset] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const debouncedSearch = useDebouncedValue(search);
   const capabilities = useGetAuthorizationCapabilities({ enabled: open });
   const summary = useGetShareSummary(
     {
@@ -237,38 +46,9 @@ export function ResourceShareDialog({
     },
     { enabled: open },
   );
-  const recipients = useSearchAuthorizationRecipients(
-    {
-      purpose: "share",
-      kind: recipientType,
-      query: debouncedSearch,
-      resourceType,
-      resourceId,
-    },
-    { enabled: open },
-  );
-  const createShare = useCreateShare({
-    onSuccess: () => {
-      setSearch("");
-      setSelectedRecipient(null);
-      setError(null);
-    },
-    onError: (requestError) =>
-      setError(extractApiErrorMessages(requestError).join(" ")),
-  });
-
-  useEffect(() => {
-    setSelectedRecipient(null);
-    setSearch("");
-  }, [recipientType]);
 
   useEffect(() => {
     setGrantOffset(0);
-    setRecipientType("user");
-    setSearch("");
-    setSelectedRecipient(null);
-    setPermission("execute");
-    setError(null);
   }, [open, resourceId, resourceType]);
 
   const contractReady = Boolean(
@@ -331,225 +111,22 @@ export function ResourceShareDialog({
             </Alert>
           )}
 
-        {canManage && (
+        {canManage && summary.data && (
           <>
-            <section
-              aria-labelledby="share-recipient-heading"
-              className="space-y-3"
-            >
-              <h3
-                id="share-recipient-heading"
-                className="text-sm font-semibold"
-              >
-                {t("sharing.addRecipient")}
-              </h3>
-              <RadioGroup
-                value={recipientType}
-                onValueChange={(value) =>
-                  setRecipientType(value as ShareRecipientType)
-                }
-                className="grid grid-cols-2"
-                aria-label={t("sharing.recipientType")}
-              >
-                {(["user", "team"] as ShareRecipientType[]).map((kind) => (
-                  <Label
-                    key={kind}
-                    className="flex cursor-pointer items-center gap-2 rounded-md border p-3"
-                  >
-                    <RadioGroupItem value={kind} />
-                    {t(`sharing.recipient.${kind}`)}
-                  </Label>
-                ))}
-              </RadioGroup>
-
-              <div className="space-y-1.5">
-                <Label htmlFor={searchId}>
-                  {t("sharing.searchRecipients")}
-                </Label>
-                <Input
-                  id={searchId}
-                  value={search}
-                  onChange={(event) => {
-                    setSearch(event.target.value);
-                    setSelectedRecipient(null);
-                  }}
-                  placeholder={t("sharing.searchPlaceholder", {
-                    recipient: t(
-                      `sharing.recipient.${recipientType}`,
-                    ).toLowerCase(),
-                  })}
-                  aria-describedby={`${searchId}-hint`}
-                />
-                <p
-                  id={`${searchId}-hint`}
-                  className="text-xs text-muted-foreground"
-                >
-                  {t("sharing.searchHint")}
-                </p>
-              </div>
-
-              {recipients.isFetching && debouncedSearch.trim().length >= 2 && (
-                <p role="status" className="text-sm text-muted-foreground">
-                  {t("sharing.searching")}
-                </p>
-              )}
-              {recipients.data?.items && recipients.data.items.length > 0 && (
-                <ul className="max-h-40 space-y-1 overflow-y-auto rounded-md border p-1">
-                  {recipients.data.items.map((recipient) => (
-                    <li key={`${recipient.kind}-${recipient.id}`}>
-                      <button
-                        type="button"
-                        className={cn(
-                          "w-full rounded px-3 py-2 text-left text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                          selectedRecipient?.id === recipient.id && "bg-muted",
-                        )}
-                        aria-pressed={selectedRecipient?.id === recipient.id}
-                        onClick={() => setSelectedRecipient(recipient)}
-                      >
-                        {recipient.display_name}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-
-              <RadioGroup
-                value={permission}
-                onValueChange={(value) =>
-                  setPermission(value as ShareDialogPermission)
-                }
-                className="grid grid-cols-1 gap-2 sm:grid-cols-2"
-                aria-label={t("sharing.accessLevel")}
-              >
-                {permissionOptions.map((option) => (
-                  <Label
-                    key={option}
-                    className={cn(
-                      "flex cursor-pointer items-start gap-3 rounded-lg border p-3",
-                      permission === option && "border-primary",
-                    )}
-                  >
-                    <RadioGroupItem value={option} />
-                    <span>
-                      <span className="block text-sm font-medium">
-                        {t(permissionLabelKey(option))}
-                      </span>
-                      <span className="mt-1 block text-xs font-normal text-muted-foreground">
-                        {t(permissionDescriptionKey(option))}
-                      </span>
-                    </span>
-                  </Label>
-                ))}
-              </RadioGroup>
-
-              {recipientType === "team" && selectedRecipient && (
-                <p className="text-xs text-muted-foreground">
-                  {t("sharing.team.futureMembers")}
-                </p>
-              )}
-              {error && (
-                <p role="alert" className="text-sm text-destructive">
-                  {error}
-                </p>
-              )}
-              <Button
-                type="button"
-                className="w-full sm:w-auto"
-                disabled={!selectedRecipient}
-                loading={createShare.isPending}
-                onClick={() => {
-                  if (!selectedRecipient) return;
-                  setError(null);
-                  createShare.mutate({
-                    resourceType,
-                    resourceId,
-                    recipientType,
-                    recipientId: selectedRecipient.id,
-                    permission,
-                  });
-                }}
-              >
-                {t("sharing.save")}
-              </Button>
-            </section>
-
-            <section
-              aria-labelledby="existing-access-heading"
-              className="space-y-3 border-t pt-4"
-            >
-              <h3
-                id="existing-access-heading"
-                className="text-sm font-semibold"
-              >
-                {t("sharing.existingAccess")}
-              </h3>
-              {summary.data?.direct_grants.length ? (
-                <ul className="space-y-2">
-                  {summary.data.direct_grants.map((grant) => (
-                    <GrantRow
-                      key={grant.id}
-                      grant={grant}
-                      resourceType={resourceType}
-                      resourceId={resourceId}
-                    />
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  {t("sharing.noGrants")}
-                </p>
-              )}
-              {(grantOffset > 0 || summary.data?.has_more) && (
-                <nav
-                  className="flex items-center justify-end gap-2"
-                  aria-label={t("sharing.grantsPagination")}
-                >
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={grantOffset === 0 || summary.isFetching}
-                    onClick={() =>
-                      setGrantOffset((offset) =>
-                        Math.max(0, offset - directGrantPageSize),
-                      )
-                    }
-                  >
-                    {t("teams.previous")}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={!summary.data?.has_more || summary.isFetching}
-                    onClick={() =>
-                      setGrantOffset((offset) => offset + directGrantPageSize)
-                    }
-                  >
-                    {t("teams.next")}
-                  </Button>
-                </nav>
-              )}
-              {summary.data?.inherited_from_project && (
-                <p className="text-xs text-muted-foreground">
-                  {t("sharing.inheritedAccess")}
-                </p>
-              )}
-              {summary.data?.additional_access_warning && (
-                <Alert>
-                  <AlertDescription>
-                    {t("sharing.additionalAccessWarning")}
-                  </AlertDescription>
-                </Alert>
-              )}
-              {summary.data?.legacy_public_access && (
-                <Alert>
-                  <AlertDescription>
-                    {t("sharing.legacyPublicWarning")}
-                  </AlertDescription>
-                </Alert>
-              )}
-            </section>
+            <ShareRecipientForm
+              open={open}
+              resourceType={resourceType}
+              resourceId={resourceId}
+            />
+            <ExistingAccessSection
+              summary={summary.data}
+              resourceType={resourceType}
+              resourceId={resourceId}
+              grantOffset={grantOffset}
+              pageSize={directGrantPageSize}
+              isFetching={summary.isFetching}
+              onGrantOffsetChange={setGrantOffset}
+            />
           </>
         )}
 

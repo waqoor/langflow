@@ -5,16 +5,13 @@ import { TeamDetails } from "../team-details";
 
 const mockUpdateTeam = jest.fn();
 const mockRemoveMember = jest.fn();
+const mockUseGetTeamMembers = jest.fn();
 let currentTeam: AuthorizationTeam;
 let currentMembers: AuthorizationTeamMember[];
 
 jest.mock("@/controllers/API/queries/teams", () => ({
   useGetTeam: () => ({ data: currentTeam, isLoading: false, isError: false }),
-  useGetTeamMembers: () => ({
-    data: currentMembers,
-    isLoading: false,
-    isError: false,
-  }),
+  useGetTeamMembers: (...args: unknown[]) => mockUseGetTeamMembers(...args),
   useUpdateTeam: () => ({ mutate: mockUpdateTeam, isPending: false }),
   useAddTeamMember: () => ({ mutate: jest.fn(), isPending: false }),
   useUpdateTeamMemberRole: () => ({ mutate: jest.fn(), isPending: false }),
@@ -73,6 +70,12 @@ const member = (
 describe("TeamDetails", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockUseGetTeamMembers.mockImplementation(() => ({
+      data: currentMembers,
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+    }));
     currentTeam = team();
     currentMembers = [
       member("Admin User", "admin"),
@@ -136,6 +139,50 @@ describe("TeamDetails", () => {
     expect(
       screen.queryByRole("button", { name: "Remove Directory User" }),
     ).toBeNull();
+  });
+
+  it("uses one lookahead row without rendering an empty next page", () => {
+    currentMembers = Array.from({ length: 50 }, (_, index) =>
+      member(`Member ${index + 1}`, "user"),
+    );
+    const view = render(<TeamDetails teamId="team-1" onDeleted={jest.fn()} />);
+
+    expect(mockUseGetTeamMembers).toHaveBeenLastCalledWith({
+      teamId: "team-1",
+      limit: 51,
+      offset: 0,
+    });
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+
+    currentMembers = [...currentMembers, member("Member 51", "user")];
+    view.rerender(<TeamDetails teamId="team-1" onDeleted={jest.fn()} />);
+
+    expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+    expect(screen.queryByText("Member 51")).toBeNull();
+  });
+
+  it("starts from the first member page when the selected team changes", () => {
+    currentMembers = Array.from({ length: 51 }, (_, index) =>
+      member(`Member ${index + 1}`, "user"),
+    );
+    const view = render(<TeamDetails teamId="team-1" onDeleted={jest.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(mockUseGetTeamMembers).toHaveBeenLastCalledWith({
+      teamId: "team-1",
+      limit: 51,
+      offset: 50,
+    });
+
+    currentTeam = team({ id: "team-2", team_name: "Platform Engineering" });
+    currentMembers = [member("New Team Admin", "admin")];
+    view.rerender(<TeamDetails teamId="team-2" onDeleted={jest.fn()} />);
+
+    expect(mockUseGetTeamMembers).toHaveBeenLastCalledWith({
+      teamId: "team-2",
+      limit: 51,
+      offset: 0,
+    });
   });
 
   it("has no detectable axe violations for the team management detail", async () => {

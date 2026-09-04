@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from lfx.services.authorization.base import ShareRuleSnapshot
-from sqlalchemy import delete
+from sqlalchemy import delete, or_, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 
@@ -15,6 +15,7 @@ from langflow.services.authorization.audit import stage_mutation_audit
 from langflow.services.authorization.concurrency import RevisionPreconditionError, require_revision_precondition
 from langflow.services.authorization.repository import ResourceRecord, load_resource, supported_actions
 from langflow.services.authorization.team_management import team_is_valid_recipient
+from langflow.services.database.lock_retry import RetryableTransactionError
 from langflow.services.database.models.auth import (
     AuthzShare,
     SharePermissionLevel,
@@ -55,6 +56,17 @@ class ShareManagementError(Exception):
         return {"code": self.code, "message": self.message}
 
 
+class _ShareLockSetChangedError(ShareManagementError, RetryableTransactionError):
+    """Request a bounded replay after stored share identity fields change."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=409,
+            code="SHARE_CHANGED",
+            message="The share changed while the operation was being prepared.",
+        )
+
+
 def _error(status_code: int, code: str, message: str) -> ShareManagementError:
     return ShareManagementError(status_code=status_code, code=code, message=message)
 
@@ -85,6 +97,7 @@ async def validate_share_recipient(
     scope: str,
     target_id: UUID | None,
     lock: bool,
+    require_eligible: bool = True,
 ) -> None:
     """Validate the current canonical recipient under the mutation lock."""
     if scope in {ShareScope.PRIVATE.value, ShareScope.PUBLIC.value}:
@@ -94,15 +107,21 @@ async def validate_share_recipient(
     if target_id is None:
         raise _error(422, "SHARE_TARGET_REQUIRED", "This share scope requires a recipient.")
     if scope == ShareScope.USER.value:
+        if lock and session.get_bind().dialect.name == "sqlite":
+            await session.exec(update(User).where(User.id == target_id).values(updated_at=User.updated_at))
         statement = select(User).where(User.id == target_id)
         if lock:
-            statement = statement.with_for_update()
+            statement = statement.with_for_update().execution_options(populate_existing=True)
         user = (await session.exec(statement)).first()
-        if user is None or user.is_active is not True:
+        if require_eligible and (user is None or user.is_active is not True):
             raise _error(422, "SHARE_RECIPIENT_INELIGIBLE", "The selected user is not an active recipient.")
         return
     if scope == ShareScope.TEAM.value:
-        if not await team_is_valid_recipient(session, target_id, lock=lock):
+        try:
+            valid = await team_is_valid_recipient(session, target_id, lock=lock)
+        except RetryableTransactionError as exc:
+            raise _ShareLockSetChangedError from exc
+        if require_eligible and not valid:
             raise _error(422, "SHARE_RECIPIENT_INELIGIBLE", "The selected team is not an active valid recipient.")
         return
     raise _error(422, "SHARE_VALUE_INVALID", "The share scope is invalid.")
@@ -155,13 +174,13 @@ async def create_share(
         scope=scope,
         permission_level=permission_level,
     )
+    await validate_share_recipient(session, scope=scope, target_id=target_id, lock=True)
     resource = await resolve_resource_for_share(
         session,
         resource_type=resource_type,
         resource_id=resource_id,
         lock=True,
     )
-    await validate_share_recipient(session, scope=scope, target_id=target_id, lock=True)
 
     duplicate = select(AuthzShare.id).where(
         AuthzShare.resource_type == resource_type,
@@ -207,6 +226,48 @@ async def create_share(
     return ShareMutationResult(row=row, resource=resource, changed=True)
 
 
+async def _lock_stored_share(
+    session: AsyncSession,
+    *,
+    share_id: UUID,
+    require_eligible_recipient: bool,
+) -> tuple[AuthzShare, ResourceRecord]:
+    """Lock recipient, resource, then share and verify the preliminary hint."""
+    hint_statement = select(AuthzShare).where(AuthzShare.id == share_id).execution_options(populate_existing=True)
+    hint_row = (await session.exec(hint_statement)).first()
+    if hint_row is None:
+        raise _error(404, "SHARE_NOT_FOUND", "Share not found.")
+    identity_hint = (
+        hint_row.resource_type,
+        hint_row.resource_id,
+        hint_row.scope,
+        hint_row.target_id,
+    )
+
+    await validate_share_recipient(
+        session,
+        scope=hint_row.scope,
+        target_id=hint_row.target_id,
+        lock=True,
+        require_eligible=require_eligible_recipient,
+    )
+    resource = await resolve_resource_for_share(
+        session,
+        resource_type=hint_row.resource_type,
+        resource_id=hint_row.resource_id,
+        lock=True,
+    )
+    locked_statement = (
+        select(AuthzShare).where(AuthzShare.id == share_id).with_for_update().execution_options(populate_existing=True)
+    )
+    row = (await session.exec(locked_statement)).first()
+    if row is None:
+        raise _error(404, "SHARE_NOT_FOUND", "Share not found.")
+    if (row.resource_type, row.resource_id, row.scope, row.target_id) != identity_hint:
+        raise _ShareLockSetChangedError
+    return row, resource
+
+
 async def update_share(
     session: AsyncSession,
     *,
@@ -217,17 +278,11 @@ async def update_share(
     precondition_required: bool,
 ) -> ShareMutationResult:
     """Update one grant against its locked canonical revision."""
-    statement = select(AuthzShare).where(AuthzShare.id == share_id).with_for_update()
-    row = (await session.exec(statement)).first()
-    if row is None:
-        raise _error(404, "SHARE_NOT_FOUND", "Share not found.")
-    resource = await resolve_resource_for_share(
+    row, resource = await _lock_stored_share(
         session,
-        resource_type=row.resource_type,
-        resource_id=row.resource_id,
-        lock=True,
+        share_id=share_id,
+        require_eligible_recipient=True,
     )
-    await validate_share_recipient(session, scope=row.scope, target_id=row.target_id, lock=True)
     _validate_value_contract(
         resource_type=row.resource_type,
         scope=row.scope,
@@ -278,17 +333,11 @@ async def delete_share(
     precondition_required: bool,
 ) -> ShareDeletionResult:
     """Delete exactly one locked grant and atomically retain its audit trail."""
-    statement = select(AuthzShare).where(AuthzShare.id == share_id).with_for_update()
-    row = (await session.exec(statement)).first()
-    if row is None:
-        raise _error(404, "SHARE_NOT_FOUND", "Share not found.")
-    resource = await resolve_resource_for_share(
+    row, resource = await _lock_stored_share(
         session,
-        resource_type=row.resource_type,
-        resource_id=row.resource_id,
-        lock=True,
+        share_id=share_id,
+        require_eligible_recipient=False,
     )
-    await validate_share_recipient(session, scope=row.scope, target_id=row.target_id, lock=True)
     try:
         require_revision_precondition(
             resource_type="share",
@@ -336,17 +385,22 @@ async def delete_resource_shares(
     """Remove grants for resources being deleted without touching recipients."""
     if not resources:
         return ()
-    rows: list[AuthzShare] = []
-    for resource_type, resource_id in dict.fromkeys(resources):
-        statement = (
-            select(AuthzShare)
-            .where(
-                AuthzShare.resource_type == resource_type,
-                AuthzShare.resource_id == resource_id,
+    ordered_resources = sorted(set(resources), key=lambda item: (item[0], str(item[1])))
+    statement = (
+        select(AuthzShare)
+        .where(
+            or_(
+                *(
+                    (AuthzShare.resource_type == resource_type) & (AuthzShare.resource_id == resource_id)
+                    for resource_type, resource_id in ordered_resources
+                )
             )
-            .with_for_update()
         )
-        rows.extend((await session.exec(statement)).all())
+        .order_by(col(AuthzShare.id))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    rows = list((await session.exec(statement)).all())
     snapshots = tuple(
         ShareRuleSnapshot(
             share_id=row.id,

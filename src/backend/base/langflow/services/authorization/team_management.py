@@ -25,6 +25,7 @@ from langflow.services.authorization.policy import (
     team_operation_allowed,
     validate_team_roster,
 )
+from langflow.services.database.lock_retry import RetryableTransactionError
 from langflow.services.database.models.auth import (
     AuthzShare,
     AuthzTeam,
@@ -95,6 +96,24 @@ class UserTeamLifecycleResult:
     retired_team_ids: tuple[UUID, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class UserTeamLifecycleLockHint:
+    """Untrusted identifiers used to acquire a user lifecycle lock set."""
+
+    team_ids: tuple[UUID, ...]
+    member_ids_by_team: tuple[tuple[UUID, tuple[UUID, ...]], ...]
+    affected_user_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class UserTeamLifecycleLockContext:
+    """Canonical user/team state retained under the ordered transaction locks."""
+
+    users: dict[UUID, User]
+    teams: dict[UUID, AuthzTeam]
+    members_by_team: dict[UUID, list[AuthzTeamMember]]
+
+
 class TeamManagementError(Exception):
     """Stable domain failure translated by the API boundary."""
 
@@ -107,6 +126,17 @@ class TeamManagementError(Exception):
     @property
     def detail(self) -> dict[str, str]:
         return {"code": self.code, "message": self.message}
+
+
+class _TeamLockSetChangedError(TeamManagementError, RetryableTransactionError):
+    """Request a bounded replay when a preliminary roster hint became stale."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=409,
+            code="TEAM_ROSTER_CHANGED",
+            message="The team roster changed while the operation was being prepared.",
+        )
 
 
 def _error(status_code: int, code: str, message: str) -> TeamManagementError:
@@ -122,7 +152,9 @@ async def _lock_team(session: AsyncSession, team_id: UUID) -> AuthzTeam:
         await session.exec(
             update(AuthzTeam).where(col(AuthzTeam.id) == team_id).values(updated_at=AuthzTeam.updated_at)
         )
-    statement = select(AuthzTeam).where(AuthzTeam.id == team_id).with_for_update()
+    statement = (
+        select(AuthzTeam).where(AuthzTeam.id == team_id).with_for_update().execution_options(populate_existing=True)
+    )
     team = (await session.exec(statement)).first()
     if team is None:
         raise _error(404, "TEAM_NOT_FOUND", "Team not found")
@@ -137,8 +169,28 @@ async def _member_rows(
 ) -> list[AuthzTeamMember]:
     statement = select(AuthzTeamMember).where(AuthzTeamMember.team_id == team_id).order_by(col(AuthzTeamMember.user_id))
     if lock:
-        statement = statement.with_for_update()
+        statement = statement.with_for_update().execution_options(populate_existing=True)
     return list((await session.exec(statement)).all())
+
+
+async def _users_by_id(
+    session: AsyncSession,
+    user_ids: Sequence[UUID],
+    *,
+    lock: bool = True,
+) -> dict[UUID, User]:
+    if not user_ids:
+        return {}
+    ordered_ids = tuple(sorted(set(user_ids), key=str))
+    if lock and session.get_bind().dialect.name == "sqlite":
+        # SQLite ignores SELECT FOR UPDATE.  Take its write transaction at the
+        # first entity family in the global lock order, before invariant reads.
+        await session.exec(update(User).where(col(User.id).in_(ordered_ids)).values(updated_at=User.updated_at))
+    statement = select(User).where(col(User.id).in_(ordered_ids)).order_by(col(User.id))
+    if lock:
+        statement = statement.with_for_update().execution_options(populate_existing=True)
+    users = (await session.exec(statement)).all()
+    return {user.id: user for user in users}
 
 
 async def _active_users_by_id(
@@ -147,13 +199,43 @@ async def _active_users_by_id(
     *,
     lock: bool = True,
 ) -> dict[UUID, User]:
-    if not user_ids:
-        return {}
-    statement = select(User).where(col(User.id).in_(tuple(dict.fromkeys(user_ids))))
-    if lock:
-        statement = statement.with_for_update()
-    users = (await session.exec(statement)).all()
-    return {user.id: user for user in users if user.is_active is True}
+    users = await _users_by_id(session, user_ids, lock=lock)
+    return {user_id: user for user_id, user in users.items() if user.is_active is True}
+
+
+async def _lock_team_state(
+    session: AsyncSession,
+    team_id: UUID,
+    *,
+    additional_user_ids: Sequence[UUID] = (),
+) -> tuple[AuthzTeam, list[AuthzTeamMember], dict[UUID, User]]:
+    """Lock users, the team, then memberships and verify the hinted roster.
+
+    The unlocked identifier read is only a lock-set hint.  Every HTTP writer
+    runs through ``run_with_lock_retry``; if another committed writer changed
+    the roster before the ordered locks were complete, the whole transaction
+    is rolled back and replayed against a fresh hint.
+    """
+    sqlite_team: AuthzTeam | None = None
+    if session.get_bind().dialect.name == "sqlite":
+        # SQLite has one database-wide writer and ignores row-lock ordering.
+        # Acquire the parent-row write transaction before even the roster hint
+        # so a waiter cannot validate against the snapshot of an earlier
+        # writer. PostgreSQL follows the cross-entity row order below.
+        sqlite_team = await _lock_team(session, team_id)
+
+    hinted_members = await _member_rows(session, team_id, lock=False)
+    hinted_member_ids = {member.user_id for member in hinted_members}
+    users = await _active_users_by_id(
+        session,
+        tuple(hinted_member_ids) + tuple(additional_user_ids),
+        lock=True,
+    )
+    team = sqlite_team if sqlite_team is not None else await _lock_team(session, team_id)
+    members = await _member_rows(session, team_id, lock=True)
+    if {member.user_id for member in members} != hinted_member_ids:
+        raise _TeamLockSetChangedError
+    return team, members, users
 
 
 async def _roster_states(
@@ -186,14 +268,24 @@ async def team_roster_counts(session: AsyncSession, team_id: UUID) -> TeamRoster
 
 async def team_is_valid_recipient(session: AsyncSession, team_id: UUID, *, lock: bool = False) -> bool:
     """Return whether a team can currently confer access to active users."""
-    statement = select(AuthzTeam).where(AuthzTeam.id == team_id)
     if lock:
-        statement = statement.with_for_update()
-    team = (await session.exec(statement)).first()
+        try:
+            team, members, users = await _lock_team_state(session, team_id)
+        except TeamManagementError as exc:
+            if exc.code == "TEAM_NOT_FOUND":
+                return False
+            raise
+    else:
+        team = (await session.exec(select(AuthzTeam).where(AuthzTeam.id == team_id))).first()
+        members = await _member_rows(session, team_id, lock=False) if team is not None else []
+        users = await _active_users_by_id(
+            session,
+            [member.user_id for member in members],
+            lock=False,
+        )
     if team is None or team.is_active is not True:
         return False
-    members = await _member_rows(session, team_id, lock=lock)
-    states = await _roster_states(session, members, lock=lock)
+    states = tuple(TeamMemberState(member.user_id, member.role, member.user_id in users) for member in members)
     try:
         validate_team_roster(states, team_is_active=True)
     except TeamRosterError:
@@ -415,17 +507,26 @@ async def patch_team(
     actor: User,
     team_id: UUID,
     patch: TeamPatch,
+    require_absent_member_ids: Sequence[UUID] = (),
+    require_present_member_ids: Sequence[UUID] = (),
 ) -> TeamMutationResult:
-    team = await _lock_team(session, team_id)
-    current = await _member_rows(session, team_id)
-    current_by_user = {member.user_id: member for member in current}
-
     upsert_ids = [item.user_id for item in patch.member_upserts]
     remove_ids = list(patch.remove_member_ids)
     if len(set(upsert_ids)) != len(upsert_ids) or len(set(remove_ids)) != len(remove_ids):
         raise _error(409, "TEAM_MEMBERSHIP_EXISTS", "Duplicate roster operation.")
     if set(upsert_ids) & set(remove_ids):
         raise _error(422, "TEAM_ROSTER_OPERATION_CONFLICT", "A user cannot be added and removed together.")
+
+    team, current, users = await _lock_team_state(
+        session,
+        team_id,
+        additional_user_ids=tuple(upsert_ids) + tuple(remove_ids),
+    )
+    current_by_user = {member.user_id: member for member in current}
+    if set(require_absent_member_ids) & set(current_by_user):
+        raise _error(409, "TEAM_MEMBERSHIP_EXISTS", "User is already a member of this team.")
+    if set(require_present_member_ids) - set(current_by_user):
+        raise _error(404, "TEAM_MEMBERSHIP_NOT_FOUND", "Membership not found")
 
     metadata_change = any(
         (
@@ -442,10 +543,6 @@ async def patch_team(
         raise _error(403, "TEAM_OPERATION_FORBIDDEN", "Only a Platform Admin may change team status.")
 
     prospective: dict[UUID, tuple[str, bool]] = {}
-    users = await _active_users_by_id(
-        session,
-        list(current_by_user) + upsert_ids,
-    )
     for member in current:
         prospective[member.user_id] = (member.role, member.user_id in users)
 
@@ -625,22 +722,12 @@ async def add_member(
     team_id: UUID,
     member: MemberUpsert,
 ) -> MembershipMutationResult:
-    team = await _lock_team(session, team_id)
-    existing = (
-        await session.exec(
-            select(AuthzTeamMember).where(
-                AuthzTeamMember.team_id == team_id,
-                AuthzTeamMember.user_id == member.user_id,
-            )
-        )
-    ).first()
-    if existing is not None:
-        raise _error(409, "TEAM_MEMBERSHIP_EXISTS", "User is already a member of this team.")
     result = await patch_team(
         session,
         actor=actor,
-        team_id=team.id,
+        team_id=team_id,
         patch=TeamPatch(member_upserts=(member,)),
+        require_absent_member_ids=(member.user_id,),
     )
     created = (
         await session.exec(
@@ -661,24 +748,22 @@ async def change_member_role(
     user_id: UUID,
     role: str,
 ) -> MembershipMutationResult:
-    await _lock_team(session, team_id)
-    existing = (
+    result = await patch_team(
+        session,
+        actor=actor,
+        team_id=team_id,
+        patch=TeamPatch(member_upserts=(MemberUpsert(user_id, role),)),
+        require_present_member_ids=(user_id,),
+    )
+    member = (
         await session.exec(
             select(AuthzTeamMember).where(
                 AuthzTeamMember.team_id == team_id,
                 AuthzTeamMember.user_id == user_id,
             )
         )
-    ).first()
-    if existing is None:
-        raise _error(404, "TEAM_MEMBERSHIP_NOT_FOUND", "Membership not found")
-    result = await patch_team(
-        session,
-        actor=actor,
-        team_id=team_id,
-        patch=TeamPatch(member_upserts=(MemberUpsert(user_id, role),)),
-    )
-    return MembershipMutationResult(existing, result.events, result.counts)
+    ).one()
+    return MembershipMutationResult(member, result.events, result.counts)
 
 
 async def remove_member(
@@ -706,8 +791,7 @@ async def delete_team(
 ) -> AuthorizationMutation:
     if not actor_can_administer_platform(actor):
         raise _error(403, "TEAM_OPERATION_FORBIDDEN", "Only a Platform Admin may delete a team.")
-    team = await _lock_team(session, team_id)
-    members = await _member_rows(session, team_id)
+    team, members, _users = await _lock_team_state(session, team_id)
     affected = tuple(member.user_id for member in members)
     share_rows = list(
         (
@@ -719,6 +803,7 @@ async def delete_team(
                 )
                 .order_by(col(AuthzShare.id))
                 .with_for_update()
+                .execution_options(populate_existing=True)
             )
         ).all()
     )
@@ -767,12 +852,85 @@ async def delete_team(
     return mutation
 
 
+async def prepare_user_team_lifecycle_lock_hint(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+) -> UserTeamLifecycleLockHint:
+    """Read the candidate teams and users without treating them as authority."""
+    membership_hints = list(
+        (
+            await session.exec(
+                select(AuthzTeamMember).where(AuthzTeamMember.user_id == user_id).order_by(col(AuthzTeamMember.team_id))
+            )
+        ).all()
+    )
+    team_ids = tuple(sorted({row.team_id for row in membership_hints}, key=str))
+    member_ids_by_team: list[tuple[UUID, tuple[UUID, ...]]] = []
+    affected_user_ids = {user_id}
+    for team_id in team_ids:
+        members = await _member_rows(session, team_id, lock=False)
+        member_ids = tuple(member.user_id for member in members)
+        member_ids_by_team.append((team_id, member_ids))
+        affected_user_ids.update(member_ids)
+    return UserTeamLifecycleLockHint(
+        team_ids=team_ids,
+        member_ids_by_team=tuple(member_ids_by_team),
+        affected_user_ids=tuple(sorted(affected_user_ids, key=str)),
+    )
+
+
+async def acquire_user_team_lifecycle_locks(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    hint: UserTeamLifecycleLockHint,
+) -> UserTeamLifecycleLockContext:
+    """Acquire users, teams, and memberships and reject a stale lock-set hint."""
+    users = await _users_by_id(session, hint.affected_user_ids, lock=True)
+
+    current_team_ids = tuple(
+        sorted(
+            (
+                await session.exec(
+                    select(AuthzTeamMember.team_id)
+                    .where(AuthzTeamMember.user_id == user_id)
+                    .order_by(col(AuthzTeamMember.team_id))
+                )
+            ).all(),
+            key=str,
+        )
+    )
+    if current_team_ids != hint.team_ids:
+        raise _TeamLockSetChangedError
+
+    teams: dict[UUID, AuthzTeam] = {}
+    for team_id in hint.team_ids:
+        try:
+            teams[team_id] = await _lock_team(session, team_id)
+        except TeamManagementError as exc:
+            if exc.code == "TEAM_NOT_FOUND":
+                raise _TeamLockSetChangedError from exc
+            raise
+
+    hinted_member_ids = dict(hint.member_ids_by_team)
+    members_by_team: dict[UUID, list[AuthzTeamMember]] = {}
+    for team_id in hint.team_ids:
+        members = await _member_rows(session, team_id)
+        if tuple(member.user_id for member in members) != hinted_member_ids[team_id]:
+            raise _TeamLockSetChangedError
+        members_by_team[team_id] = members
+
+    return UserTeamLifecycleLockContext(users=users, teams=teams, members_by_team=members_by_team)
+
+
 async def apply_user_team_lifecycle(
     session: AsyncSession,
     *,
     actor_id: UUID,
     user_id: UUID,
     remove_memberships: bool,
+    lock_context: UserTeamLifecycleLockContext,
 ) -> UserTeamLifecycleResult:
     """Preserve team invariants during security-driven user lifecycle changes.
 
@@ -782,17 +940,8 @@ async def apply_user_team_lifecycle(
     non-empty active teams without an active Admin are suspended. Resources
     referenced by removed team shares are never touched.
     """
-    membership_hints = list(
-        (
-            await session.exec(
-                select(AuthzTeamMember).where(AuthzTeamMember.user_id == user_id).order_by(col(AuthzTeamMember.team_id))
-            )
-        ).all()
-    )
-    team_ids = tuple(sorted({row.team_id for row in membership_hints}, key=str))
-    locked_teams: dict[UUID, AuthzTeam] = {}
-    for team_id in team_ids:
-        locked_teams[team_id] = await _lock_team(session, team_id)
+    team_ids = tuple(sorted(lock_context.teams, key=str))
+    active_users = {user_id: user for user_id, user in lock_context.users.items() if user.is_active is True}
 
     now = datetime.now(timezone.utc)
     service = get_authorization_service()
@@ -802,8 +951,8 @@ async def apply_user_team_lifecycle(
     retired: list[UUID] = []
 
     for team_id in team_ids:
-        team = locked_teams[team_id]
-        members = await _member_rows(session, team_id)
+        team = lock_context.teams[team_id]
+        members = lock_context.members_by_team[team_id]
         target_members = [member for member in members if member.user_id == user_id]
         prospective = [member for member in members if not remove_memberships or member.user_id != user_id]
 
@@ -896,7 +1045,9 @@ async def apply_user_team_lifecycle(
             )
             continue
 
-        states = list(await _roster_states(session, prospective))
+        states = [
+            TeamMemberState(member.user_id, member.role, member.user_id in active_users) for member in prospective
+        ]
         states = [
             TeamMemberState(state.user_id, state.role, False if state.user_id == user_id else state.is_active)
             for state in states

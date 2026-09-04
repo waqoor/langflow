@@ -9,7 +9,7 @@ from lfx.services.authorization import (
     UserAuthorizationSnapshot,
 )
 from lfx.utils.util_strings import escape_like_pattern
-from sqlalchemy import func, update
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 from sqlmodel.sql.expression import SelectOfScalar
@@ -33,10 +33,15 @@ from langflow.services.authorization.lifecycle import (
     validate_identity_mutation,
 )
 from langflow.services.authorization.team_management import (
+    TeamManagementError,
+    UserTeamLifecycleLockContext,
     UserTeamLifecycleResult,
+    acquire_user_team_lifecycle_locks,
     actor_can_administer_platform,
     apply_user_team_lifecycle,
+    prepare_user_team_lifecycle_lock_hint,
 )
+from langflow.services.database.lock_retry import run_with_lock_retry
 from langflow.services.database.models.user.crud import update_user
 from langflow.services.database.models.user.model import User, UserCreate, UserRead, UserUpdate
 from langflow.services.deps import get_auth_service, get_authorization_service, get_settings_service
@@ -280,21 +285,35 @@ async def patch_user(
         possible_lifecycle_kind = AuthorizationMutationKind.USER_DISABLED
     elif user_update.is_superuser is False:
         possible_lifecycle_kind = AuthorizationMutationKind.USER_SUPERUSER_DEMOTED
+    lifecycle_lock_context: UserTeamLifecycleLockContext | None = None
     if possible_lifecycle_kind is not None:
-        await acquire_identity_mutation_lock(
-            authorization_service,
-            session,
-            kind=possible_lifecycle_kind,
-            entity_id=user_id,
-            affected_user_ids=(user_id,),
-        )
 
-    user_statement = select(User).where(User.id == user_id)
-    if possible_lifecycle_kind is not None:
-        if session.get_bind().dialect.name == "sqlite":
-            await session.exec(update(User).where(User.id == user_id).values(updated_at=User.updated_at))
-        user_statement = user_statement.with_for_update()
-    if user_db := (await session.exec(user_statement)).first():
+        async def acquire_lifecycle_locks(_attempt: int) -> UserTeamLifecycleLockContext:
+            hint = await prepare_user_team_lifecycle_lock_hint(session, user_id=user_id)
+            await acquire_identity_mutation_lock(
+                authorization_service,
+                session,
+                kind=possible_lifecycle_kind,
+                entity_id=user_id,
+                affected_user_ids=hint.affected_user_ids,
+            )
+            return await acquire_user_team_lifecycle_locks(session, user_id=user_id, hint=hint)
+
+        try:
+            lifecycle_lock_context = await run_with_lock_retry(
+                acquire_lifecycle_locks,
+                session=session,
+                description=f"prepare user lifecycle update {user_id}",
+            )
+        except TeamManagementError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    user_db = (
+        lifecycle_lock_context.users.get(user_id)
+        if lifecycle_lock_context is not None
+        else (await session.exec(select(User).where(User.id == user_id))).first()
+    )
+    if user_db is not None:
         lifecycle_mutation: AuthorizationMutation | None = None
         team_lifecycle = UserTeamLifecycleResult((), (), (), ())
         fields_changed = sorted(
@@ -356,11 +375,15 @@ async def patch_user(
             )
             raise
         if lifecycle_mutation is not None and lifecycle_mutation.kind is AuthorizationMutationKind.USER_DISABLED:
+            if lifecycle_lock_context is None:
+                msg = "user lifecycle locks were not acquired"
+                raise RuntimeError(msg)
             team_lifecycle = await apply_user_team_lifecycle(
                 session,
                 actor_id=user.id,
                 user_id=user_db.id,
                 remove_memberships=False,
+                lock_context=lifecycle_lock_context,
             )
         if lifecycle_mutation is not None:
             await stage_identity_mutation(authorization_service, session, lifecycle_mutation)
@@ -464,17 +487,27 @@ async def delete_user(
         raise HTTPException(status_code=403, detail="Permission denied")
 
     authorization_service = get_authorization_service()
-    await acquire_identity_mutation_lock(
-        authorization_service,
-        session,
-        kind=AuthorizationMutationKind.USER_DELETED,
-        entity_id=user_id,
-        affected_user_ids=(user_id,),
-    )
-    if session.get_bind().dialect.name == "sqlite":
-        await session.exec(update(User).where(User.id == user_id).values(updated_at=User.updated_at))
-    stmt = select(User).where(User.id == user_id).with_for_update()
-    user_db = (await session.exec(stmt)).first()
+
+    async def acquire_lifecycle_locks(_attempt: int) -> UserTeamLifecycleLockContext:
+        hint = await prepare_user_team_lifecycle_lock_hint(session, user_id=user_id)
+        await acquire_identity_mutation_lock(
+            authorization_service,
+            session,
+            kind=AuthorizationMutationKind.USER_DELETED,
+            entity_id=user_id,
+            affected_user_ids=hint.affected_user_ids,
+        )
+        return await acquire_user_team_lifecycle_locks(session, user_id=user_id, hint=hint)
+
+    try:
+        lifecycle_lock_context = await run_with_lock_retry(
+            acquire_lifecycle_locks,
+            session=session,
+            description=f"prepare user deletion {user_id}",
+        )
+    except TeamManagementError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    user_db = lifecycle_lock_context.users.get(user_id)
     if not user_db:
         await _audit_deny(
             user_id=actor_user_id,
@@ -520,6 +553,7 @@ async def delete_user(
             actor_id=actor_user_id,
             user_id=user_id,
             remove_memberships=True,
+            lock_context=lifecycle_lock_context,
         )
         # Provider-side deployments are not deleted here. The ownership gate
         # above requires their explicit disposition before account deletion.

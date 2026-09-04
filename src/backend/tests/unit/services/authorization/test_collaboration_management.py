@@ -854,3 +854,62 @@ async def test_share_mutation_revision_recipient_and_audit_contract(collaboratio
         )
         assert [audit.action for audit in audits] == ["share:create", "share:update", "share:delete"]
         assert all(audit.details and audit.details.get("event") == "mutation" for audit in audits)
+
+
+@pytest.mark.asyncio
+async def test_inactive_recipient_share_can_be_revoked_but_not_updated(
+    collaboration_db: CollaborationDatabase,
+):
+    owner = _user("inactive-revocation-owner")
+    recipient = _user("inactive-revocation-recipient")
+    await _seed_users(collaboration_db, owner, recipient)
+
+    async with collaboration_db.session() as session:
+        flow = Flow(name=f"flow-{uuid4()}", user_id=owner.id, data={})
+        session.add(flow)
+        await session.flush()
+        created = await share_management.create_share(
+            session,
+            actor_id=owner.id,
+            resource_type="flow",
+            resource_id=flow.id,
+            scope=ShareScope.USER.value,
+            target_id=recipient.id,
+            permission_level=SharePermissionLevel.READ.value,
+        )
+        share_id = created.row.id
+        etag = strong_etag("share", share_id, created.row.revision)
+        await session.commit()
+
+    async with collaboration_db.session() as session:
+        stored_recipient = await session.get(User, recipient.id)
+        assert stored_recipient is not None
+        stored_recipient.is_active = False
+        session.add(stored_recipient)
+        await session.commit()
+
+    async with collaboration_db.session() as session:
+        with pytest.raises(share_management.ShareManagementError) as exc_info:
+            await share_management.update_share(
+                session,
+                actor_id=owner.id,
+                share_id=share_id,
+                permission_level=SharePermissionLevel.WRITE.value,
+                if_match=etag,
+                precondition_required=True,
+            )
+        assert exc_info.value.code == "SHARE_RECIPIENT_INELIGIBLE"
+        await session.rollback()
+
+    async with collaboration_db.session() as session:
+        await share_management.delete_share(
+            session,
+            actor_id=owner.id,
+            share_id=share_id,
+            if_match=etag,
+            precondition_required=True,
+        )
+        await session.commit()
+
+    async with collaboration_db.session() as session:
+        assert await session.get(AuthzShare, share_id) is None

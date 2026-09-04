@@ -11,6 +11,7 @@ import {
   PORT,
   PROXY_TARGET,
 } from "./src/customization/config-constants";
+import { E2E_ARTIFACT_WATCH_IGNORE } from "./tests/utils/authz-e2e-mode.mjs";
 import { createAccessTokenExpireSecondsDefinition } from "./vite-env-definitions";
 
 export default defineConfig(({ mode }) => {
@@ -87,6 +88,9 @@ export default defineConfig(({ mode }) => {
     ],
     server: {
       port: port,
+      watch: {
+        ignored: E2E_ARTIFACT_WATCH_IGNORE,
+      },
       proxy: {
         ...proxyTargets,
       },
