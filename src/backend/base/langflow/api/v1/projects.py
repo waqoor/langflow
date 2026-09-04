@@ -74,6 +74,7 @@ from langflow.services.authorization.fetch import (
     deny_to_404_unless_readable,
 )
 from langflow.services.authorization.lifecycle import safe_share_rules_removed
+from langflow.services.authorization.repository import load_resource
 from langflow.services.authorization.share_management import delete_resource_shares
 from langflow.services.authorization.team_management import actor_can_administer_platform
 from langflow.services.authorization.utils import _resolve_authz_domain
@@ -320,6 +321,7 @@ async def _new_project(
                     flow_user_id=row.user_id,
                     workspace_id=row.workspace_id,
                     folder_id=row.folder_id,
+                    audit_session=session,
                 )
             except HTTPException as exc:
                 raise deny_to_404(exc, detail="Flow not found") from exc
@@ -707,18 +709,17 @@ async def _apply_project_update(
 
     Raises on deployment-guard errors; callers map those to their own status.
     """
-    locked_project = (
-        await session.exec(select(Folder).where(Folder.id == existing_project.id).with_for_update())
-    ).first()
-    if locked_project is None:
+    # The canonical lock helper starts a SQLite writer transaction and refreshes
+    # the session's existing ORM identity after acquiring a PostgreSQL row lock.
+    if await load_resource(session, resource_type="project", resource_id=existing_project.id, lock=True) is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    existing_project = locked_project
     await ensure_project_permission(
         current_user,
         ProjectAction.WRITE,
         project_id=existing_project.id,
         project_user_id=existing_project.user_id,
         workspace_id=existing_project.workspace_id,
+        audit_session=session,
     )
     _check_project_revision(existing_project, if_match=if_match, required=precondition_required)
 
@@ -899,6 +900,7 @@ async def _apply_project_update(
                     flow_user_id=row.user_id,
                     workspace_id=row.workspace_id,
                     folder_id=row.folder_id,
+                    audit_session=session,
                 )
             except HTTPException as exc:
                 raise deny_to_404(exc, detail="Flow not found") from exc
@@ -1019,7 +1021,7 @@ async def _apply_project_update(
             )
 
     # Convert to FolderRead while session is still active to avoid detached instance errors
-    return FolderRead.model_validate(existing_project, from_attributes=True)
+    return _redacted_project_read(existing_project, current_user)
 
 
 def _folder_create_to_update(project: FolderCreate) -> FolderUpdate:
@@ -1310,6 +1312,7 @@ async def delete_project(
             project_id=project_id,
             project_user_id=target.user_id,
             workspace_id=target.workspace_id,
+            audit_session=session,
         )
         _check_project_revision(target, if_match=if_match, required=precondition_required)
         await check_project_has_deployments(session, project_id=project_id)
@@ -1326,6 +1329,7 @@ async def delete_project(
                     flow_user_id=child.user_id,
                     workspace_id=child.workspace_id,
                     folder_id=child.folder_id,
+                    audit_session=session,
                 )
             except HTTPException as exc:
                 raise HTTPException(

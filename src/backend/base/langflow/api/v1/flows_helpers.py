@@ -757,7 +757,7 @@ async def _update_existing_flow(
     existing_flow.webhook = webhook_component is not None
 
     if _flow_revision_snapshot(existing_flow) == revision_snapshot:
-        return FlowRead.model_validate(existing_flow, from_attributes=True)
+        return flow_read_for_actor(existing_flow, actor_user_id)
 
     existing_flow.edit_revision += 1
     existing_flow.updated_at = datetime.now(timezone.utc)
@@ -767,7 +767,7 @@ async def _update_existing_flow(
     # Writes happen under the owner's storage namespace, not the actor's.
     await _save_flow_to_fs(existing_flow, owner_user_id, storage_service)
 
-    return FlowRead.model_validate(existing_flow, from_attributes=True)
+    return flow_read_for_actor(existing_flow, actor_user_id)
 
 
 async def _patch_flow(
@@ -897,7 +897,7 @@ async def _patch_flow(
     )
 
     if _flow_revision_snapshot(db_flow) == revision_snapshot:
-        return FlowRead.model_validate(db_flow, from_attributes=True)
+        return flow_read_for_actor(db_flow, user_id)
 
     db_flow.edit_revision += 1
     db_flow.updated_at = datetime.now(timezone.utc)
@@ -907,7 +907,7 @@ async def _patch_flow(
     # Writes happen under the owner's storage namespace, not the actor's.
     await _save_flow_to_fs(db_flow, owner_user_id, storage_service)
 
-    return FlowRead.model_validate(db_flow, from_attributes=True)
+    return flow_read_for_actor(db_flow, user_id)
 
 
 def _sanitize_flow_filename(raw_name: str, fallback_id: str = "flow") -> str:

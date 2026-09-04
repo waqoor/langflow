@@ -114,6 +114,8 @@ def test_authz_path_filter_covers_every_contract_layer():
         "src/backend/base/langflow/services/authorization/**",
         "src/backend/base/langflow/alembic/**",
         "src/lfx/src/lfx/services/authorization/**",
+        "src/backend/tests/conftest.py",
+        "src/backend/tests/unit/utils/test_flow_secrets.py",
         "src/frontend/tests/core/features/authz/**",
         "scripts/ci/authz_endpoint_matrix.json",
         ".github/workflows/ci.yml",

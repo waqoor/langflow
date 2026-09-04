@@ -23,7 +23,7 @@ from lfx.utils.flow_validation import (
     validate_catalog_policy_for_flow,
 )
 from pydantic import ValidationError
-from sqlalchemy import case
+from sqlalchemy import case, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import and_, col, select
 
@@ -1521,11 +1521,18 @@ async def delete_multiple_flows(
             from langflow.services.deps import get_authorization_service
 
             authz = get_authorization_service()
-            base_stmt = select(Flow).where(col(Flow.id).in_(flow_ids)).order_by(Flow.id).with_for_update()
-            if await authz.supports_cross_user_fetch() and await authz.is_enabled():
-                stmt = base_stmt
-            else:
-                stmt = base_stmt.where(Flow.user_id == actor.id)
+            predicates = [col(Flow.id).in_(flow_ids)]
+            if not (await authz.supports_cross_user_fetch() and await authz.is_enabled()):
+                predicates.append(col(Flow.user_id) == actor.id)
+            if db.get_bind().dialect.name == "sqlite":
+                await db.exec(update(Flow).where(*predicates).values(edit_revision=Flow.edit_revision))
+            stmt = (
+                select(Flow)
+                .where(*predicates)
+                .order_by(Flow.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
             flows_to_delete = list((await db.exec(stmt)).all())
             if not allow_missing and {flow.id for flow in flows_to_delete} != set(flow_ids):
                 raise HTTPException(status_code=404, detail="One or more flows were not found.")

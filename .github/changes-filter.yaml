@@ -155,6 +155,8 @@ authz-sharing:
   - "src/backend/base/langflow/helpers/flow.py"
   - "src/backend/base/langflow/utils/flow_secrets.py"
   - "src/backend/tests/**/authorization/**"
+  - "src/backend/tests/conftest.py"
+  - "src/backend/tests/unit/utils/test_flow_secrets.py"
   - "src/backend/tests/**/test_authz_*.py"
   - "src/backend/tests/**/test_*team*.py"
   - "src/backend/tests/**/test_*share*.py"

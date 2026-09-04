@@ -1,7 +1,7 @@
-"""End-to-end route-guard tests driven by an isolated allow/deny enforcer.
+"""HTTP coverage for production authorization and isolated plugin route guards.
 
-The native production authorization service has its own repository and HTTP
-integration coverage. These tests retain :class:`PolicyTestAuthorizationService`
+Native-service cases use real identities, committed grants, and database writes.
+The compatibility cases retain :class:`PolicyTestAuthorizationService`
 (see ``_policy_double``) as an interface-isolation fixture and exercise the
 *real* flow routes over HTTP, validating that:
 
@@ -18,11 +18,16 @@ Everything runs against the OSS package only — no EE Casbin enforcer required.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
+import pytest
 from langflow.api.v1.knowledge_bases import KBStorageHelper
+from langflow.services.auth.mcp_encryption import encrypt_auth_settings
+from langflow.services.authorization.service import LangflowAuthorizationService
+from langflow.services.database.models.auth import AuthzTeam
 from langflow.services.database.models.flow.model import Flow
 from langflow.services.database.models.folder.model import Folder
 from langflow.services.database.models.user.model import User
@@ -41,6 +46,17 @@ from ._policy_double import (
 )
 
 _PASSWORD = "testpassword"  # noqa: S105 — test-only credential  # pragma: allowlist secret
+
+
+@pytest.fixture
+def native_authorization(client, monkeypatch):  # noqa: ARG001 - initialize the real application before enabling authz
+    """Use the application's registered production service, never the policy double."""
+    service = get_authorization_service()
+    assert type(service) is LangflowAuthorizationService
+    monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_ENABLED", True)
+    monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_AUDIT_ENABLED", True)
+    monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_AUDIT_DURABLE", True)
+    return service
 
 
 async def _make_user(username: str) -> UUID:
@@ -564,3 +580,217 @@ async def test_developer_can_create_files_and_knowledge_bases(client, monkeypatc
             files={"files": ("developer.txt", b"allowed", "text/plain")},
         )
         assert preview.status_code == 200, preview.text
+
+
+@pytest.mark.parametrize("resource_type", ["flow", "project"])
+@pytest.mark.parametrize("method", ["PATCH", "PUT"])
+@pytest.mark.parametrize("no_op", [False, True])
+async def test_native_collaborator_save_response_keeps_owner_credentials_private(
+    client, native_authorization, resource_type, method, no_op
+):
+    assert await native_authorization.is_enabled()
+    owner_name, editor_name = f"owner_{uuid4().hex}", f"editor_{uuid4().hex}"
+    owner_id, editor_id = await _make_user(owner_name), await _make_user(editor_name)
+    owner_headers, editor_headers = await _login(client, owner_name), await _login(client, editor_name)
+    secret = "synthetic-owner-credential-for-redaction"  # noqa: S105
+    if resource_type == "flow":
+        resource_id = await _make_flow(owner_id, f"SecretFlow_{uuid4().hex}")
+        async with session_scope() as session:
+            row = await session.get(Flow, resource_id)
+            row.data = {
+                "nodes": [
+                    {
+                        "id": "TextInput-secret",
+                        "data": {
+                            "type": "TextInput",
+                            "node": {
+                                "template": {"input_value": {"name": "input_value", "password": True, "value": secret}},
+                            },
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+            await session.commit()
+        path = f"api/v1/flows/{resource_id}"
+    else:
+        resource_id = await _make_project(owner_id, f"SecretProject_{uuid4().hex}")
+        async with session_scope() as session:
+            row = await session.get(Folder, resource_id)
+            row.auth_settings = encrypt_auth_settings({"auth_type": "apikey", "api_key": secret})
+            await session.commit()
+        path = f"api/v1/projects/{resource_id}"
+
+    grant = await client.post(
+        "api/v1/authz/shares",
+        headers=owner_headers,
+        json={
+            "resource_type": resource_type,
+            "resource_id": str(resource_id),
+            "scope": "user",
+            "target_id": str(editor_id),
+            "permission_level": "write",
+        },
+    )
+    assert grant.status_code == 201, grant.text
+    observed = await client.get(path, headers=editor_headers)
+    assert observed.status_code == 200, observed.text
+    assert secret not in observed.text
+    original = observed.json()
+    payload = {"name": original["name"]}
+    if not no_op:
+        payload["description"] = "A collaborator's content edit"
+    saved = await client.request(
+        method, path, headers={**editor_headers, "If-Match": observed.headers["etag"]}, json=payload
+    )
+    assert saved.status_code == 200, saved.text
+    assert secret not in saved.text
+    if resource_type == "project":
+        assert saved.json()["auth_settings"] is None
+    assert saved.json()["edit_revision"] == original["edit_revision"] + (0 if no_op else 1)
+    owner_read = await client.get(path, headers=owner_headers)
+    assert owner_read.status_code == 200, owner_read.text
+    if resource_type == "flow":
+        assert secret in owner_read.text
+    else:
+        assert owner_read.json()["auth_settings"] is not None
+
+
+@pytest.mark.parametrize("resource_type", ["flow", "project"])
+async def test_native_unready_service_rejects_owner_writes_and_permission_discovery(
+    client, native_authorization, resource_type
+):
+    username = f"unready_owner_{uuid4().hex}"
+    owner_id = await _make_user(username)
+    headers = await _login(client, username)
+    resource_id = await (
+        _make_flow(owner_id, "Unready flow") if resource_type == "flow" else _make_project(owner_id, "Unready project")
+    )
+    path = f"api/v1/{'flows' if resource_type == 'flow' else 'projects'}/{resource_id}"
+    observed = await client.get(path, headers=headers)
+    assert observed.status_code == 200
+    # Actual invalid canonical data makes the production readiness probe fail.
+    async with session_scope() as session:
+        session.add(AuthzTeam(team_name="Unrepaired legacy team", adom_name=uuid4().hex))
+        await session.commit()
+    assert await native_authorization.collaboration_ready() is False
+    for write_headers in (headers, {**headers, "If-Match": observed.headers["etag"]}):
+        saved = await client.patch(path, headers=write_headers, json={"description": "Must not persist"})
+        assert saved.status_code == 503, saved.text
+        assert saved.json()["detail"]["code"] == "AUTHORIZATION_NOT_READY"
+    permissions = await client.post(
+        "api/v1/authz/me/permissions",
+        headers=headers,
+        json={
+            "resource_type": resource_type,
+            "resource_ids": [str(resource_id)],
+        },
+    )
+    assert permissions.status_code == 503, permissions.text
+    async with session_scope() as session:
+        stored = await session.get(Flow if resource_type == "flow" else Folder, resource_id)
+        assert stored.description != "Must not persist"
+        assert stored.edit_revision == observed.json()["edit_revision"]
+
+
+@pytest.mark.parametrize("resource_type", ["flow", "project"])
+async def test_native_effective_permissions_never_invents_owner_actions(client, native_authorization, resource_type):
+    assert await native_authorization.is_enabled()
+    username = f"action_owner_{uuid4().hex}"
+    owner_id = await _make_user(username)
+    headers = await _login(client, username)
+    resource_id = await (
+        _make_flow(owner_id, "Action flow") if resource_type == "flow" else _make_project(owner_id, "Action project")
+    )
+    response = await client.post(
+        "api/v1/authz/me/permissions",
+        headers=headers,
+        json={
+            "resource_type": resource_type,
+            "resource_ids": [str(resource_id)],
+            "actions": ["read", "unknown", "execute"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    allowed = response.json()["permissions"][str(resource_id)]
+    assert "read" in allowed
+    assert "unknown" not in allowed
+    assert ("execute" in allowed) is (resource_type == "flow")
+
+
+@pytest.mark.parametrize("resource_type", ["flow", "project"])
+@pytest.mark.parametrize("audit_enabled", [False, True])
+async def test_native_concurrent_writes_accept_exactly_one_observed_revision(
+    client, native_authorization, monkeypatch, resource_type, audit_enabled
+):
+    assert await native_authorization.is_enabled()
+    monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_AUDIT_ENABLED", audit_enabled)
+    username = f"concurrent_owner_{uuid4().hex}"
+    owner_id = await _make_user(username)
+    headers = await _login(client, username)
+    resource_id = await (
+        _make_flow(owner_id, "Concurrent flow")
+        if resource_type == "flow"
+        else _make_project(owner_id, "Concurrent project")
+    )
+    path = f"api/v1/{'flows' if resource_type == 'flow' else 'projects'}/{resource_id}"
+    observed = await client.get(path, headers=headers)
+    assert observed.status_code == 200
+    write_headers = {**headers, "If-Match": observed.headers["etag"]}
+    outcomes = await asyncio.gather(
+        *(
+            client.patch(path, headers=write_headers, json={"description": description})
+            for description in ("First edit", "Second edit")
+        )
+    )
+    assert sorted(response.status_code for response in outcomes) == [200, 412], [response.text for response in outcomes]
+    winner = next(response.json() for response in outcomes if response.status_code == 200)
+    persisted = await client.get(path, headers=headers)
+    assert persisted.status_code == 200
+    assert persisted.json()["description"] == winner["description"]
+    assert persisted.json()["edit_revision"] == observed.json()["edit_revision"] + 1
+
+
+@pytest.mark.parametrize("resource_type", ["flow", "bulk_flow", "project"])
+@pytest.mark.parametrize("audit_enabled", [False, True])
+async def test_native_delete_cannot_remove_a_concurrently_updated_revision(
+    client, native_authorization, monkeypatch, resource_type, audit_enabled
+):
+    assert await native_authorization.is_enabled()
+    monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_AUDIT_ENABLED", audit_enabled)
+    username = f"delete_race_owner_{uuid4().hex}"
+    owner_id = await _make_user(username)
+    headers = await _login(client, username)
+    is_project = resource_type == "project"
+    resource_id = await (
+        _make_project(owner_id, "Delete race project") if is_project else _make_flow(owner_id, "Delete race flow")
+    )
+    path = f"api/v1/{'projects' if is_project else 'flows'}/{resource_id}"
+    observed = await client.get(path, headers=headers)
+    assert observed.status_code == 200, observed.text
+    write_headers = {**headers, "If-Match": observed.headers["etag"]}
+    if resource_type == "bulk_flow":
+        delete = client.request(
+            "DELETE",
+            "api/v1/flows/",
+            headers=headers,
+            json={
+                "flow_ids": [str(resource_id)],
+                "expected_edit_revision": {str(resource_id): observed.json()["edit_revision"]},
+            },
+        )
+    else:
+        delete = client.delete(path, headers=write_headers)
+    saved, deleted = await asyncio.gather(
+        client.patch(path, headers=write_headers, json={"description": "Concurrent edit must survive stale deletion"}),
+        delete,
+    )
+    if saved.status_code == 200:
+        assert deleted.status_code == 412, deleted.text
+        persisted = await client.get(path, headers=headers)
+        assert persisted.status_code == 200, persisted.text
+        assert persisted.json()["description"] == saved.json()["description"]
+    else:
+        assert saved.status_code == 404, saved.text
+        assert deleted.status_code in {200, 204}, deleted.text
+        assert (await client.get(path, headers=headers)).status_code == 404

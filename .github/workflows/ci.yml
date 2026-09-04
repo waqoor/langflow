@@ -393,6 +393,7 @@ jobs:
           src/backend/tests/unit/api/v1/test_authz_lifecycle_contract.py
           src/backend/tests/unit/services/authorization/test_capability_flag.py
           src/backend/tests/unit/services/authorization/test_rbac_enforcement_integration.py
+          src/backend/tests/unit/utils/test_flow_secrets.py
           src/backend/tests/unit/api/v1/test_authz_admin_routes.py
           src/backend/tests/unit/api/v1/test_authz_share_routes.py
           -x -v

@@ -17,6 +17,7 @@ import {
   useIsFlowPermissionPending,
   useIsFlowReadOnly,
   usePermissions,
+  useResourceCapability,
 } from "../permissionsContext";
 
 function setMockedPermissions(
@@ -74,6 +75,50 @@ describe("PermissionsProvider gating", () => {
     jest.clearAllMocks();
     setMockedCapabilities();
   });
+
+  it.each(["permissions error", "capabilities error", "unready", "loading"])(
+    "denies cached grants after %s",
+    (failure) => {
+      const permissionQuery = {
+        data: {
+          permissions: { "flow-1": ["read", "write"] },
+          capabilities: { "flow-1": { can_edit: true } },
+        },
+        isLoading: false,
+        isError: false,
+      };
+      mockUseGetEffectivePermissions.mockReturnValue(permissionQuery);
+      const { result, rerender } = renderHook(
+        () => ({
+          provider: usePermissions(),
+          resource: useResourceCapability("flow", "flow-1", "can_edit"),
+        }),
+        { wrapper: flowWrapper(["flow-1"]) },
+      );
+      expect(result.current.provider.can("flow-1", "write")).toBe(true);
+      expect(result.current.resource.allowed).toBe(true);
+
+      const authorizationQuery = mockUseGetAuthorizationCapabilities();
+      if (failure === "permissions error") permissionQuery.isError = true;
+      if (failure === "capabilities error") authorizationQuery.isError = true;
+      if (failure === "unready") {
+        mockUseGetAuthorizationCapabilities.mockReturnValue({
+          ...authorizationQuery,
+          data: { ...authorizationQuery.data, service_ready: false },
+        });
+      }
+      if (failure === "loading") permissionQuery.isLoading = true;
+      rerender();
+
+      expect(result.current.provider.can("flow-1", "write")).toBe(false);
+      expect(result.current.provider.capability("flow-1", "can_edit")).toBe(
+        false,
+      );
+      expect(result.current.provider.isUnavailable).toBe(true);
+      expect(result.current.resource.allowed).toBe(false);
+      expect(result.current.resource.isUnavailable).toBe(true);
+    },
+  );
 
   it("keeps every action enabled when the pass-through returns all actions", () => {
     setMockedPermissions({

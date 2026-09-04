@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, TypeVar
 
 from fastapi import HTTPException, status
+from sqlalchemy import update
 from sqlmodel import select
 
 from langflow.services.deps import get_authorization_service
@@ -37,11 +38,15 @@ async def authorized_or_owner_scoped(
     """
     authz = get_authorization_service()
     # Require both plugin capability and AUTHZ_ENABLED before widening the query.
-    if await authz.supports_cross_user_fetch() and await authz.is_enabled():
-        stmt = select(model).where(id_column == resource_id)
-    else:
-        stmt = select(model).where(id_column == resource_id).where(owner_column == owner_id)
+    predicates = [id_column == resource_id]
+    if not (await authz.supports_cross_user_fetch() and await authz.is_enabled()):
+        predicates.append(owner_column == owner_id)
+    stmt = select(model).where(*predicates)
     if for_update:
+        if session.get_bind().dialect.name == "sqlite":
+            # SQLite ignores FOR UPDATE; acquire its writer lock before the
+            # canonical read. Preserve the same visibility predicate on the lock.
+            await session.exec(update(model).where(*predicates).values({id_column.key: id_column}))
         stmt = stmt.with_for_update().execution_options(populate_existing=True)
     return (await session.exec(stmt)).first()
 

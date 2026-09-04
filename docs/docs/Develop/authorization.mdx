@@ -210,6 +210,8 @@ Flow and project reads return strong ETags based on `edit_revision`. When native
 
 An editable share permits content changes only. Owners retain owner-managed fields, publication/authentication settings, moving and deletion. A shared-project editor can create a child flow, but the authenticated creator remains that flow's owner. Project deletion validates every affected child and deployment before deleting anything.
 
+Collaborator save responses use the same credential redaction as reads, including no-op saves. A restored hidden value retains its stored secret classification and variable binding. The database locks the current revision before validating updates or deletions; SQLite obtains its writer lock even when authorization auditing is disabled. An unavailable enabled authorization service returns `503` rather than relaxing the revision requirement.
+
 ## Revocation and operational recovery
 
 A committed share deletion, team removal/deactivation, role change, or user deactivation controls the next admission on every worker because the native evaluator rereads canonical state. Rechecked HITL resumes also require current access. This does not cancel work already admitted before the commit or change its execution principal.

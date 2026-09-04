@@ -52,13 +52,19 @@ export function ResourceShareDialog({
   }, [open, resourceId, resourceType]);
 
   const contractReady = Boolean(
-    capabilities.data?.enforcement_active &&
+    !capabilities.isLoading &&
+      !capabilities.isError &&
+      capabilities.data?.enforcement_active &&
       capabilities.data.service_ready &&
       capabilities.data.user_team_sharing_supported &&
       capabilities.data.share_modes.includes("execute") &&
       capabilities.data.share_modes.includes("write"),
   );
-  const canManage = contractReady && summary.data?.can_manage_shares === true;
+  const canManage =
+    contractReady &&
+    !summary.isLoading &&
+    !summary.isError &&
+    summary.data?.can_manage_shares === true;
   const titleName =
     resourceName || summary.data?.display_name || t("sharing.resource.unnamed");
 

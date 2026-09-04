@@ -100,6 +100,27 @@ describe("ResourceShareDialog", () => {
     expect(await axe(document.body)).toHaveNoViolations();
   });
 
+  it("removes grant controls when a summary refetch fails with cached data", () => {
+    const { rerender } = renderDialog();
+    expect(screen.getByRole("button", { name: "Share" })).toBeInTheDocument();
+    mockUseGetShareSummary.mockReturnValue({
+      data: emptySummary,
+      isLoading: false,
+      isFetching: false,
+      isError: true,
+    });
+    rerender(
+      <ResourceShareDialog
+        open
+        onOpenChange={jest.fn()}
+        resourceType="flow"
+        resourceId="flow-1"
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
+    expect(mockCreateShare).not.toHaveBeenCalled();
+  });
+
   it("preserves API-created grants until an explicit supported conversion", () => {
     mockSummaryData = {
       ...emptySummary,

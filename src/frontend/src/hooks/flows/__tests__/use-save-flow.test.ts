@@ -53,6 +53,7 @@ jest.mock("@/stores/flowsManagerStore", () => {
 describe("useSaveFlow", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSetCurrentFlow.mockReset();
 
     const savedFlow = {
       id: "flow-1",
@@ -414,17 +415,18 @@ describe("useSaveFlow", () => {
     );
   });
   it("keeps canvas edits made while the save was in flight", async () => {
-    // The editor's `currentFlow` is the baseline the next autosave diffs
-    // against. Overwriting it with the response of a save that started before
-    // the edit makes that edit look already-persisted, so the follow-up save
-    // is skipped and the work is lost. Reproduced on Windows CI as a published
-    // flow whose edge never reached the backend.
+    // A successful save advances the revision, while newer canvas edits must
+    // remain unsaved and be included in the next request.
+    mockSetCurrentFlow.mockImplementation((flow) => {
+      flowStoreState.currentFlow = flow;
+    });
     let resolveSave: (() => void) | undefined;
     mockMutate.mockImplementation((payload, options) => {
       resolveSave = () =>
         options.onSuccess({
           ...flowsManagerState.currentFlow,
           data: payload.data,
+          edit_revision: payload.edit_revision + 1,
         });
     });
 
@@ -442,8 +444,15 @@ describe("useSaveFlow", () => {
     resolveSave!();
     await inFlight;
 
-    expect(mockSetCurrentFlow).not.toHaveBeenCalled();
     expect(flowStoreState.currentFlow.data.edges).toEqual(newEdges);
+    expect(flowStoreState.currentFlow.edit_revision).toBe(5);
+    const followUp = result.current();
+    expect(mockMutate.mock.calls[1][0]).toMatchObject({
+      edit_revision: 5,
+      data: { edges: newEdges },
+    });
+    resolveSave!();
+    await followUp;
   });
 
   it("still adopts the saved flow when the canvas did not change", async () => {

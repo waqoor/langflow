@@ -79,15 +79,18 @@ export function useResourceCapability(
     authorization.data?.enforcement_active === false && !authorization.isError;
   const isLoading = permissions.isLoading || authorization.isLoading;
   const isUnavailable =
-    isLoading ||
+    authorization.isLoading ||
     authorization.isError ||
     authorization.data?.enforcement_active === undefined ||
-    (Boolean(resourceId) && permissions.isError);
+    (!explicitlyDisabled &&
+      (authorization.data?.service_ready !== true ||
+        permissions.isLoading ||
+        (Boolean(resourceId) && permissions.isError)));
   const resolved = resourceId
     ? permissions.data?.capabilities?.[resourceId]?.[capability]
     : undefined;
   return {
-    allowed: resolved ?? explicitlyDisabled,
+    allowed: !isUnavailable && (resolved ?? explicitlyDisabled),
     isLoading,
     isUnavailable,
   };
@@ -179,16 +182,26 @@ export function PermissionsProvider({
       enforcementActive === false && capabilitiesError === false;
     const isLoading = permissionsLoading || capabilitiesLoading;
     const isError = permissionsError || capabilitiesError;
+    const isUnavailable =
+      capabilitiesLoading ||
+      capabilitiesError ||
+      enforcementActive === undefined ||
+      (!explicitlyDisabled &&
+        (authorizationCapabilities?.service_ready !== true ||
+          permissionsLoading ||
+          permissionsError));
     return {
       permissions,
       resourceCapabilities,
       enforcementActive,
       isLoading,
       isError,
-      isUnavailable: isLoading || isError || enforcementActive === undefined,
+      isUnavailable,
       can: (resourceId, action) =>
+        !isUnavailable &&
         canPerformAction(permissions, resourceId, action, explicitlyDisabled),
       capability: (resourceId, capability) => {
+        if (isUnavailable) return false;
         if (!resourceId) return explicitlyDisabled;
         const resolved = resourceCapabilities?.[resourceId.toLowerCase()];
         return resolved?.[capability] ?? explicitlyDisabled;

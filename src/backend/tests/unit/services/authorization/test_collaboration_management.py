@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from langflow.api.v1 import authz_capabilities, authz_recipients
 from langflow.services import deps as langflow_deps
 from langflow.services.authorization import collaboration, share_management, team_management
@@ -131,6 +131,61 @@ async def _seed_users(database: CollaborationDatabase, *users: User) -> tuple[UU
         session.add_all(users)
         await session.commit()
     return tuple(user.id for user in users)
+
+
+@pytest.mark.asyncio
+async def test_unready_native_service_cannot_advertise_a_weaker_write_contract(collaboration_db: CollaborationDatabase):
+    invalid_team = AuthzTeam(team_name="Unrepaired legacy team", adom_name=uuid4().hex)
+    async with collaboration_db.session() as session:
+        session.add(invalid_team)
+        await session.commit()
+    try:
+        assert not await collaboration_db.service.collaboration_ready()
+        with pytest.raises(collaboration.CollaborationCapabilityError):
+            await collaboration.discover_collaboration_capabilities(collaboration_db.service)
+    finally:
+        async with collaboration_db.session() as session:
+            await session.delete(await session.get(AuthzTeam, invalid_team.id))
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_project_revision_check_refreshes_a_previously_loaded_row(collaboration_db: CollaborationDatabase):
+    from langflow.api.v1.projects import _apply_project_update
+    from langflow.services.authorization.concurrency import strong_etag
+    from langflow.services.database.models.folder.model import FolderUpdate
+
+    owner = _user("project-owner")
+    await _seed_users(collaboration_db, owner)
+    project = Folder(name=f"Revision project {uuid4()}", user_id=owner.id)
+    async with collaboration_db.session() as seed:
+        seed.add(project)
+        await seed.commit()
+    async with collaboration_db.session() as stale_session:
+        stale = await stale_session.get(Folder, project.id)
+        await stale_session.commit()  # End the read transaction, retaining the ORM identity.
+        async with collaboration_db.session() as writer:
+            current = await writer.get(Folder, project.id)
+            current.description = "A separately committed change"
+            current.edit_revision = 2
+            await writer.commit()
+        assert stale.edit_revision == 1
+        with pytest.raises(HTTPException) as conflict:
+            await _apply_project_update(
+                session=stale_session,
+                existing_project=stale,
+                project=FolderUpdate(description="Stale overwrite"),
+                current_user=owner,
+                background_tasks=BackgroundTasks(),
+                if_match=strong_etag("project", project.id, 1),
+                precondition_required=True,
+            )
+        assert conflict.value.status_code == 412
+        await stale_session.rollback()
+    async with collaboration_db.session() as verify:
+        current = await verify.get(Folder, project.id)
+        assert current.description == "A separately committed change"
+        assert current.edit_revision == 2
 
 
 @pytest.mark.asyncio

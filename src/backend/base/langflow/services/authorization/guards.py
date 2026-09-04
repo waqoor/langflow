@@ -826,6 +826,7 @@ async def ensure_project_permission(
     project_user_id: UUID | None = None,
     workspace_id: UUID | None = None,
     domain: str | None = None,
+    audit_session: AsyncSession | None = None,
 ) -> None:
     """Check project (folder) permission (owner override, then plugin enforce)."""
     await _ensure_typed(
@@ -838,6 +839,7 @@ async def ensure_project_permission(
             "workspace_id": workspace_id,
         },
         domain_override=domain,
+        audit_session=audit_session,
     )
 
 

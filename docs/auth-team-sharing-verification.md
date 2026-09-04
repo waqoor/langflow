@@ -3,11 +3,45 @@
 **Canonical repository:** `https://github.com/waqoor/langflow` \
 **Delivery branch:** `feat/auth-team-sharing` \
 **Fork-main base:** `e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5` \
-**Tested implementation commit:** `170dd9e1d2e5024d484769515b7bb2c511f6ef77` \
-**Tested implementation tree:** `ae6fbd4713f182f55c4b77f13a73320e84cb2002` \
+**Prior tested implementation commit:** `170dd9e1d2e5024d484769515b7bb2c511f6ef77` \
+**Prior tested implementation tree:** `ae6fbd4713f182f55c4b77f13a73320e84cb2002` \
 **Migration:** `bf6c22022777`, down revision `c6d8e0f2a4b7`, phase `MIGRATE` \
 **Verification date:** September 5, 2026 \
-**Status:** Local implementation candidate complete. Hosted Python/architecture matrices and fork Actions remain explicitly unverified because this delivery does not push, merge, deploy, or change external settings.
+**Status:** Implementation review and validation in progress. The September 5 review found additional correctness defects, so the earlier results below do not establish acceptance of the current candidate. Final commit and hosted build/test evidence are pending.
+
+## September 5 continuation
+
+Work continues on `feat/auth-team-sharing` from `b86381ec3b`. The objective authorizes feature-branch delivery and fork build/test validation. The eight pre-existing, unrelated working-tree edits remain user-owned and excluded from feature commits. `main`, the authoritative plan, and production configuration remain unchanged.
+
+The new regression cases first demonstrated these failures:
+
+- An unready native service could weaken mandatory write preconditions and return owner capabilities.
+- Effective-permission discovery could invent unsupported actions for resource owners.
+- Collaborator PATCH/PUT responses, including no-op responses, could expose owner credentials. Restoring a redacted value could also retain client-modified metadata that removed its secret classification.
+- A previously loaded project ORM instance could validate a stale revision.
+- Cached successful permission/share queries could keep mutation controls enabled after a failed refetch.
+- A successful save with newer local graph edits could leave those edits carrying the old revision.
+- Concurrent SQLite saves, bulk-flow deletes, and project deletes could lose the revision race when audit writes were disabled.
+- The PostgreSQL CI setting did not reach the HTTP application's database fixture. HTTP clients now use private PostgreSQL databases when that engine is selected, and assert the running engine's dialect.
+
+Current results (all local commands use the locked checkout; these are not hosted CI results):
+
+| Check | Observed result |
+|---|---|
+| Full frontend Jest with `TZ=UTC` | 667 suites and 7,097 tests passed; zero failures. |
+| New frontend regressions | 3 suites, 40 tests passed after the fixes. |
+| Authorization regression selection excluding the separately run native HTTP and collaboration files | 422 tests passed. |
+| Concurrent native HTTP saves | Both resource types and both audit modes passed: 4/4. |
+| Concurrent native HTTP deletions | Before fixes: 2 failures and 4 passes. After fixes: flow and bulk-flow cases passed before a Windows package-discovery timeout in setup; remaining cases are being rerun. |
+| Browser acceptance | First current run: J1/J2 passed, J3 failed on owner-observed graph content, J4-J8 did not run. A trace-enabled rerun is investigating the save sequence. These outcomes are not acceptance. |
+| Canonical OpenAPI generator | Output is byte-identical to `docs/openapi/openapi.json`. |
+| Feature Biome | 116 files passed. The three diagnostics in a wider working-tree check belong to untouched message-query files with user-owned edits. |
+| Scoped Mypy | 9 changed production files passed using explicit backend/LFX package paths, the workspace Python executable, and skipped import traversal. |
+| Full TypeScript comparison | Clean fork base: 254 errors. Candidate: 247 errors. After normalizing checkout paths, no new diagnostics and 7 resolved diagnostics. |
+| CI scripts | 152 passed and 4 failed on Windows. All four failures reproduce in the clean fork-base checkout: bundle-release planning uses Windows separators in Git object paths. Authz/endpoint/principal contract selection passed 24/24. |
+| SQLite/PostgreSQL full acceptance; Python 3.10/3.14; builds; hosted CI | Final candidate runs pending. |
+
+Evidence logs are under the local temporary directory `langflow-authz-20260905-current`. The clean comparison checkout is detached at the exact fork-main base above. Later sections retain the prior candidate's history; their PASS labels must not be transferred to the current candidate without the final reruns.
 
 ## Scope and delivery boundary
 
@@ -58,9 +92,9 @@ The sole implementation authority is `auth_share_implementation_plan.md`, revisi
 - The Share dialog and Team details were split into focused subcomponents below the repository complexity threshold. Team-member pagination uses a 51-row lookahead for 50-row pages and resets when the selected team changes; inline mutation errors are announced.
 - Vite excludes generated Playwright result, report, coverage, and blob directories from its watcher. This prevents Windows `EBUSY` crashes when Chromium holds a trace file open, with a cross-platform path-policy regression test.
 
-## Verification results
+## Prior candidate verification results
 
-All PASS results apply to this branch audit. Where an earlier broad result remains valid or a Windows runner required a split run, that boundary is stated rather than hidden.
+The following results were recorded for the prior candidate identified at the top. Current continuation results and unresolved failures take precedence. Where a Windows runner required a split run, that boundary is stated rather than hidden.
 
 | Check | Status | Actual result and boundary |
 |---|---|---|
@@ -186,6 +220,30 @@ Immutable comparison:
 
 ## Final acceptance boundary
 
-The integrated local candidate has implementation and runtime evidence for the native service, both database engines, migration/API contracts, frontend behavior, strict IBM accessibility scans, and all eight browser journeys. Hosted Python 3.10/3.14, ARM64 image, fork Actions aggregate, and any PR/merge SHA remain NOT RUN or externally blocked. They must not be described as passing until an authorized candidate is pushed and those systems produce evidence.
+## Test-contract change ledger (September 5 review)
 
-This record does not authorize unrelated baseline cleanup, a push, PR, merge, deployment, release, production configuration change, or credential change.
+The authoritative requirements are in `auth_share_implementation_plan.md`. This ledger reconstructs the existing branch changes against `e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5` and records the additional regressions before changing their expectations. Earlier test results above are historical; the current review has not yet certified the revised candidate.
+
+| Original test/file and behavior | Plan requirement | Intended behavior and minimal change | Retained negative/regression coverage |
+| --- | --- | --- | --- |
+| `test_authorization_service.py`, `test_capability_flag.py`: application service always passes through | 5, 11.1, 17.2 | Native enabled service reads canonical rows; LFX and disabled mode retain their interface defaults. Adjust application capability fixtures only. | Unknown actions/resources, inactive identities, disabled mode and LFX defaults remain covered. |
+| `test_authz_admin_routes.py`: superuser-only team mutations and rosterless creation | 3, 8, 15.1 | Supply an active initial Admin and test team-scoped roles using the canonical transaction service. Duplicate-member assertions use `TEAM_MEMBERSHIP_EXISTS`. | Real roster/final-Admin race and transaction-audit assertions live in `test_collaboration_management.py`; route isolation tests retain source, duplicate and authorization checks. |
+| `test_authz_share_routes.py`: share creator visibility, generic 403 errors and post-route membership audit callback | 9.2, 9.5, 15.5 | Management depends on stored resource authority; inaccessible grants return 404; canonical mutation service owns atomic audit staging. Fixtures model the new service boundary. | Owner/recipient visibility, public execute-only validation, all four API grant values, scoped authorization and retry rollback remain covered. |
+| `test_flows.py`, `test_projects.py`: implicit foreign-ID copies/moves and owner-only child filtering | 4, 12.1, 12.5, 14.1 | Reject unauthorized complete-set mutations; include independently authorized collaborator children and server-generated revision fields. | Foreign resources remain unchanged after rejection; owner-scoped disabled behavior, defaults, rollback and pagination assertions remain. |
+| `test_user.py`, `test_users.py`, `test_authz_lifecycle_contract.py`: hard deletion cascades through owned resources | 15.2, 15.6 | Return `409 RESOURCE_OWNERSHIP_REQUIRES_DISPOSITION` while owned resources exist; fixtures use actual active identities and explicit lifecycle locks. | Self-delete/non-admin denial, inactive login, password secrecy, transaction rollback and resource preservation remain. |
+| `test_execution_principal_contract.py` and matrix fixtures: shared webhook/SSE fetch | 13.1-13.4 | Keep operational webhook/SSE transport owner-scoped. Add assertions on real fetch arguments. | Actor credentials, public principal and graph-substitution checks remain. |
+| `permissionsContext.test.tsx`, `permissionUtils.test.ts`: missing permissions implicitly allow | 10.3, 16.6 | Missing/loading/error state denies; only a confirmed enforcement-disabled response permits compatibility fallback. | Positive explicit grants, default-deny, disabled-mode fallback and component gate cases remain. |
+| Share extension, toolbar/sidebar and routing fixtures: extension always renders null | 16.1-16.5 | Render supported authorized actions and provide explicit capability fixtures. | Unsupported resources, ordinary-user admin denial, menu closure/focus and accessibility assertions remain. |
+| Flow/folder mutation hook fixtures: headerless writes | 9.4, 14.1-14.3 | Send observed revisions; unlock then save uses the successful unlock revision. Add revision fields to persisted fixtures. | Stale edits reject without replay; unsaved graph content, scope updates and locked-flow behavior remain. |
+| `foldersStore.test.ts`: exact equality for a partial flow fixture | 6, 12.1 | Include server-generated revision metadata while retaining the original flow identity check. | Folder/store identity, owner labels and response merge behavior remain. |
+| Existing `use-save-flow.test.ts` in-flight edit regression: never calls the editor setter | 14.3 | Keep the newer unsaved graph and advance only its observed revision after a successful save. Replace the setter-spy assertion with content and next-request assertions. | No lost edges, no stale automatic retry, no updates to a different open flow. |
+| Added native HTTP and database regressions: previously uncovered save responses, failed readiness, unknown owner actions, cached project state | 9.4, 10.1, 10.3, 11.2, 12.4, 14.2 | Use the registered production service and stored users/resources. Reject unavailable authorization, redact every collaborator save response, validate the locked revision and restrict owner actions to the canonical vocabulary. | Successful owner/recipient behavior, retained stored secrets, changed/no-op writes and stale/missing revision denials. |
+| Added cached-query regressions for permission context and share dialog | 10.3, 16.4, 16.6 | A refetch failure must disable operations even if React Query retains a previous successful result. | Ready-state grants and confirmed disabled-mode behavior remain covered. |
+| `tests/conftest.py` HTTP client: always starts SQLite, including the PostgreSQL authorization job | 19.1, 23.6, 23.8 | Honor the explicit authorization database selection using an isolated temporary PostgreSQL database per HTTP client; assert the running application's dialect. Default tests continue to use isolated SQLite. | The same HTTP assertions run on both engines; no authorization, migration or transaction implementation is replaced. |
+| New concurrent HTTP save regression, with auditing both enabled and disabled | 14.1-14.2, 15.3 | Exactly one of two writes with the same observed revision succeeds; the other returns 412. SQLite must acquire its writer transaction before reading the revision. | Both flow/project variants verify the winning persisted content and a single revision increment, independent of audit configuration. |
+| New concurrent HTTP update versus single-flow, bulk-flow or project deletion | 14.1-14.2, 15.3 | Deletion must use the same locked revision contract as updates. | Real concurrent requests verify that a successful edit survives a stale delete, or a successful delete makes the edit return 404, with auditing enabled and disabled. |
+| `test_fetch.py` SQL-shape fixture | 14.1-14.2, 15.3 | Supply the PostgreSQL dialect on the fake session now that the production helper selects the database-specific lock operation. | Existing owner predicates, FOR UPDATE and identity-map refresh assertions remain unchanged; real SQLite/PostgreSQL HTTP tests cover the lock behavior. |
+
+The current candidate is not yet accepted. The prior candidate's runtime record covers the native service, database engines, migrations, frontend, and browser journeys; additional defects found during continuation require fresh final validation. Hosted Python 3.10/3.14, ARM64 images, fork Actions, and any PR integration SHA must not be described as passing until those systems produce evidence for the delivered candidate.
+
+The attached implementation objective and plan govern authorization. Feature-branch delivery and fork build/test runs are in scope; merging, publishing, deployment, protection changes, and production credential changes are excluded.

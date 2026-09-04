@@ -185,11 +185,29 @@ def restore_redacted_secret_values(proposed_data: dict | None, stored_data: dict
                     scrubbed_field = deepcopy(stored_field)
                     _strip_template_field_value(scrubbed_field)
                     if scrubbed_field.get("value") != stored_field.get("value"):
-                        proposed_field["value"] = _restore_matching_scrubbed_values(
+                        restored_value = _restore_matching_scrubbed_values(
                             proposed_field.get("value"),
                             scrubbed_field.get("value"),
                             stored_field.get("value"),
                         )
+                        if restored_value != proposed_field.get("value"):
+                            # Hidden owner values retain their server-side
+                            # classification and binding. An editor cannot
+                            # remove `password` (or its equivalent) and expose
+                            # the restored value through the next read/export.
+                            for metadata_key in (
+                                "name",
+                                "type",
+                                "_input_type",
+                                "password",
+                                "load_from_db",
+                                "table_schema",
+                            ):
+                                if metadata_key in stored_field:
+                                    proposed_field[metadata_key] = deepcopy(stored_field[metadata_key])
+                                else:
+                                    proposed_field.pop(metadata_key, None)
+                        proposed_field["value"] = restored_value
             proposed_nested = proposed_inner.get("flow")
             stored_nested = stored_inner.get("flow")
             proposed_nested_data = proposed_nested.get("data") if isinstance(proposed_nested, dict) else None

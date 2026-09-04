@@ -38,6 +38,8 @@ from langflow.services.deps import (
 from lfx.components.input_output import ChatInput
 from lfx.graph import Graph
 from lfx.log.logger import logger
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -544,12 +546,38 @@ def use_noop_session(monkeypatch):
     monkeypatch.undo()
 
 
+@pytest.fixture
+async def authorization_test_database_url():
+    """Give each HTTP client its own database on the selected PostgreSQL test server."""
+    configured = os.getenv("LANGFLOW_AUTHZ_TEST_DATABASE_URI")
+    if not configured or make_url(configured).get_backend_name() not in {"postgres", "postgresql"}:
+        yield None
+        return
+
+    server_url = make_url(configured).set(drivername="postgresql+psycopg")
+    # Identifiers are generated here, never taken from request or configuration
+    # input. Only this fixture's private database is created and removed.
+    database_name = f"langflow_authz_test_{uuid4().hex}"
+    administration = create_async_engine(server_url, isolation_level="AUTOCOMMIT")
+    try:
+        async with administration.connect() as connection:
+            await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        try:
+            yield server_url.set(database=database_name).render_as_string(hide_password=False)
+        finally:
+            async with administration.connect() as connection:
+                await connection.execute(text(f'DROP DATABASE "{database_name}" WITH (FORCE)'))
+    finally:
+        await administration.dispose()
+
+
 @pytest.fixture(name="client")
 async def client_fixture(
     session: Session,  # noqa: ARG001
     monkeypatch,
     request,
     load_flows_dir,
+    authorization_test_database_url,
 ):
     # Set the database url to a test database
     if "noclient" in request.keywords:
@@ -559,7 +587,8 @@ async def client_fixture(
         def init_app():
             db_dir = tempfile.mkdtemp()
             db_path = Path(db_dir) / "test.db"
-            monkeypatch.setenv("LANGFLOW_DATABASE_URL", f"sqlite:///{db_path}")
+            database_url = authorization_test_database_url or f"sqlite:///{db_path}"
+            monkeypatch.setenv("LANGFLOW_DATABASE_URL", database_url)
             monkeypatch.setenv("LANGFLOW_AUTO_LOGIN", "false")
             monkeypatch.setenv("LANGFLOW_SUPERUSER", "langflow")
             monkeypatch.setenv("LANGFLOW_SUPERUSER_PASSWORD", "test-superuser-password")
@@ -577,8 +606,11 @@ async def client_fixture(
             get_service_manager().services.clear()  # Clear the services cache
             app = create_app()
             db_service = get_db_service()
-            db_service.database_url = f"sqlite:///{db_path}"
+            db_service.database_url = database_url
             db_service.reload_engine()
+            expected_dialect = os.getenv("LANGFLOW_AUTHZ_EXPECTED_DIALECT")
+            if expected_dialect is not None:
+                assert db_service.engine.dialect.name == expected_dialect
             return app, db_path
 
         app, db_path = await asyncio.to_thread(init_app)

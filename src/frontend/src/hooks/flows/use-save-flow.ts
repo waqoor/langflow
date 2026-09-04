@@ -163,18 +163,24 @@ const useSaveFlow = () => {
                     // setting this would leave stale unprocessed flow data in the store,
                     // causing a crash when the user later navigates to the flow page.
                     //
-                    // And only when the canvas still holds the graph this request
-                    // carried. `currentFlow` is the baseline the next autosave
-                    // diffs against, so adopting the response of a save that
-                    // started before an edit makes that edit look persisted and
-                    // the follow-up save is skipped — the edit is lost. The
-                    // store swaps these arrays on every change, so identity is
-                    // an exact "nothing moved while we were away" check.
+                    // Preserve edits made while this save was pending, but
+                    // advance their observed revision after our successful write.
+                    // Otherwise the next save conflicts with our own response.
                     const liveState = useFlowStore.getState();
                     const graphUnchanged =
                       liveState.nodes === nodes && liveState.edges === edges;
-                    if (liveState.onFlowPage && graphUnchanged) {
-                      setCurrentFlow(updatedFlow);
+                    if (
+                      liveState.onFlowPage &&
+                      liveState.currentFlow?.id === updatedFlow.id
+                    ) {
+                      setCurrentFlow(
+                        graphUnchanged
+                          ? updatedFlow
+                          : {
+                              ...liveState.currentFlow,
+                              edit_revision: updatedFlow.edit_revision,
+                            },
+                      );
                     }
                     resolve();
                   } else {

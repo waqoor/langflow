@@ -32,7 +32,7 @@ class CollaborationCapabilities:
 
     @property
     def conditional_writes_required(self) -> bool:
-        return self.collaboration_ready and self.conditional_writes_supported
+        return self.enforcement_active and self.conditional_writes_supported
 
 
 class CollaborationCapabilityError(RuntimeError):
@@ -60,6 +60,10 @@ async def discover_collaboration_capabilities(
     except Exception as exc:
         message = "Authorization capability discovery failed"
         raise CollaborationCapabilityError(message) from exc
+
+    if enforcement_active and not service_ready:
+        message = "Authorization service is not ready"
+        raise CollaborationCapabilityError(message)
 
     return CollaborationCapabilities(
         enforcement_active=enforcement_active,

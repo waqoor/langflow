@@ -34,6 +34,7 @@ from langflow.services.authorization.guards import should_apply_owner_override
 from langflow.services.authorization.repository import (
     load_active_user,
     resolve_resources,
+    supported_actions,
     user_can_manage_resource_shares,
 )
 from langflow.services.authorization.team_management import actor_can_administer_platform
@@ -261,7 +262,7 @@ async def _apply_owner_permissions(
     )
     for resource_id in owned_ids:
         allowed = dict.fromkeys(normalized.get(resource_id, []))
-        allowed.update(dict.fromkeys(actions))
+        allowed.update(dict.fromkeys(action for action in actions if action in supported_actions(resource_type)))
         normalized[resource_id] = list(allowed)
     return normalized
 
