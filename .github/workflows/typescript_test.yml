@@ -588,22 +588,10 @@ jobs:
             exit 1
           fi
 
-          # A shard that was re-run has a report under more than one attempt.
-          # Build "shard <tab> attempt <tab> path", sort by shard then attempt
-          # descending, and keep the first row per shard so the newest attempt
-          # wins. Avoids associative arrays, which need bash 4+ (macOS ships 3.2).
+          # Resolve both v8's flattened sole-artifact layout and named folders
+          # from multiple artifacts. Keep the newest attempt for each shard.
           manifest=$(mktemp)
-          find "$raw_dir" -type f -name '*.zip' -print | while IFS= read -r zip; do
-            artifact=$(basename "$(dirname "$zip")")
-            fields=$(printf '%s\n' "$artifact" \
-              | sed -nE 's/.*-([0-9]+)-of-[0-9]+-attempt-([0-9]+)$/\1 \2/p')
-            if [[ -z "$fields" ]]; then
-              echo "Ignoring unrecognized blob report artifact: $artifact" >&2
-              continue
-            fi
-            read -r shard attempt <<<"$fields"
-            printf '%s\t%s\t%s\n' "$shard" "$attempt" "$zip"
-          done | sort -k1,1n -k2,2nr | awk -F'\t' '!seen[$1]++' > "$manifest"
+          node tests/utils/resolve-blob-reports.mjs "$raw_dir" "$EXPECTED_REPORTS" > "$manifest"
 
           actual_reports=$(wc -l < "$manifest" | tr -d ' ')
           missing=$(awk -F'\t' -v total="$EXPECTED_REPORTS" '
@@ -621,7 +609,11 @@ jobs:
           rm -rf "$report_dir"
           mkdir -p "$report_dir"
           while IFS=$'\t' read -r shard attempt zip; do
-            echo "Shard $shard <- attempt $attempt"
+            if [[ "$attempt" == "single" ]]; then
+              echo "Shard $shard <- sole downloaded artifact"
+            else
+              echo "Shard $shard <- attempt $attempt"
+            fi
             cp "$zip" "$report_dir/"
           done < "$manifest"
 

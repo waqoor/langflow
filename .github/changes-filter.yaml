@@ -197,6 +197,7 @@ authz-sharing:
   - "src/frontend/tests/core/features/authz/**"
   - "src/frontend/tests/utils/authz-e2e-mode.*"
   - "src/frontend/tests/utils/check-playwright-report*"
+  - "src/frontend/tests/utils/resolve-blob-reports*"
   - "src/frontend/tests/globalTeardown.ts"
   - "src/frontend/tests/playwrightCoverage.ts"
   - "scripts/ci/authz_endpoint_matrix.json"

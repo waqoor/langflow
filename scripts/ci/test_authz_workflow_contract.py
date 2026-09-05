@@ -83,6 +83,8 @@ def test_authz_browser_mode_is_exact_serial_and_collision_free():
     assert '--retries="$RETRIES"' in execution
     assert jobs["setup-and-test"]["continue-on-error"].startswith("${{ !inputs['authz-mode']")
     assert jobs["report-gate"]["continue-on-error"].startswith("${{ !inputs['authz-mode']")
+    report_validation = next(step for step in jobs["report-gate"]["steps"] if step.get("id") == "validate")["run"]
+    assert 'node tests/utils/resolve-blob-reports.mjs "$raw_dir" "$EXPECTED_REPORTS"' in report_validation
 
     rendered = (ROOT / ".github" / "workflows" / "typescript_test.yml").read_text(encoding="utf-8")
     artifact_prefixes = (
@@ -107,6 +109,27 @@ def test_authz_journey_inventory_has_all_exact_ids_once_without_skips():
     assert "describe.skip" not in spec
 
 
+def test_jest_report_validation_remains_blocking_for_read_only_events():
+    job = _workflow("jest_test.yml")["jobs"]["jest-unit-tests"]
+    steps = job["steps"]
+    execution = next(step for step in steps if step["name"] == "Run Frontend Unit Tests")
+    assert "if" not in execution
+    validation = next(step for step in steps if step["name"] == "Publish Jest Test Results")
+    assert validation["if"] == "always()"
+    assert validation.get("continue-on-error") is None
+    inputs = validation["with"]
+    for gate in ("fail_on_failure", "fail_on_parse_error", "require_tests", "require_passed_tests"):
+        assert inputs[gate] is True
+    assert "head.repo.full_name != github.repository" in inputs["annotate_only"]
+    assert "dependabot[bot]" in inputs["annotate_only"]
+    comment = next(step for step in steps if step["name"] == "Add Jest Coverage PR Comment")
+    assert "head.repo.full_name == github.repository" in comment["if"]
+    assert "github.actor != 'dependabot[bot]'" in comment["if"]
+    artifact = next(step for step in steps if step["name"] == "Upload Jest Test Results")
+    assert artifact["if"] == "always()"
+    assert artifact["with"]["if-no-files-found"] == "error"
+
+
 def test_authz_path_filter_covers_every_contract_layer():
     filters = yaml.safe_load((ROOT / ".github" / "changes-filter.yaml").read_text(encoding="utf-8"))
     paths = set(filters["authz-sharing"])
@@ -117,6 +140,7 @@ def test_authz_path_filter_covers_every_contract_layer():
         "src/backend/tests/conftest.py",
         "src/backend/tests/unit/utils/test_flow_secrets.py",
         "src/frontend/tests/core/features/authz/**",
+        "src/frontend/tests/utils/resolve-blob-reports*",
         "scripts/ci/authz_endpoint_matrix.json",
         ".github/workflows/ci.yml",
         ".env.example",

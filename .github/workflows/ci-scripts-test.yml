@@ -7,6 +7,7 @@ on:
       - ".github/workflows/ci-scripts-test.yml"
       - ".github/workflows/ci.yml"
       - ".github/workflows/typescript_test.yml"
+      - ".github/workflows/jest_test.yml"
       - ".github/changes-filter.yaml"
       - "pyproject.toml"
       - "src/bundles/*/pyproject.toml"
@@ -39,6 +40,7 @@ on:
       - "src/frontend/tests/core/features/authz/**"
       - "src/frontend/tests/utils/authz-e2e-mode.*"
       - "src/frontend/tests/utils/check-playwright-report*"
+      - "src/frontend/tests/utils/resolve-blob-reports*"
   workflow_dispatch:
 
 jobs:
