@@ -295,7 +295,7 @@ async def test_delete_user_rejects_owned_default_project(client: AsyncClient, lo
 async def test_delete_user_without_owned_resources(client: AsyncClient, logged_in_headers_super_user):
     target = User(
         username=f"deletable-{uuid4()}",
-        password="not-a-real-password-hash",  # noqa: S106
+        password="not-a-real-password-hash",  # noqa: S106  # pragma: allowlist secret
         is_active=True,
         is_superuser=False,
     )

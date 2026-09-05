@@ -596,15 +596,17 @@ test.describe("native team and resource sharing", () => {
         (response) =>
           response.request().method() === "PATCH" &&
           new URL(response.url()).pathname ===
-            `/api/v1/flows/${runnableFlow.id}`,
+            `/api/v1/flows/${runnableFlow.id}` &&
+          response.request().postData()?.includes(marker) === true,
       );
       await recipientInput.fill(marker);
       await flushPendingFlowAutosave(directPage);
-      await requireStatus(
+      const saved = await responseJson<ApiFlow>(
         await autosaveResponse,
         200,
         "Can edit recipient UI autosave",
       );
+      expect(JSON.stringify(saved.data)).toContain(marker);
 
       const ownerView = await getFlow(ownerPage, runnableFlow.id);
       expect(JSON.stringify(ownerView.data)).toContain(marker);

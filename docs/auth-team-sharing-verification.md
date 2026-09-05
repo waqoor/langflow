@@ -7,7 +7,8 @@
 **Prior tested implementation tree:** `ae6fbd4713f182f55c4b77f13a73320e84cb2002` \
 **Migration:** `bf6c22022777`, down revision `c6d8e0f2a4b7`, phase `MIGRATE` \
 **Verification date:** September 5, 2026 \
-**Status:** Implementation review and validation in progress. The September 5 review found additional correctness defects, so the earlier results below do not establish acceptance of the current candidate. Final commit and hosted build/test evidence are pending.
+**Current production implementation:** `c0a9e4823520c6d5be67086a4234a9c705f1b43d` \
+**Status:** Required native backend matrix and browser execution passed on the current production implementation. The broader CI run found two assistant test-fixture incompatibilities; their corrections and additional response-ordering/browser assertions are undergoing final verification. Full CI acceptance remains pending.
 
 ## September 5 continuation
 
@@ -24,7 +25,7 @@ The new regression cases first demonstrated these failures:
 - Concurrent SQLite saves, bulk-flow deletes, and project deletes could lose the revision race when audit writes were disabled.
 - The PostgreSQL CI setting did not reach the HTTP application's database fixture. HTTP clients now use private PostgreSQL databases when that engine is selected, and assert the running engine's dialect.
 
-Current results (all local commands use the locked checkout; these are not hosted CI results):
+Current local results (all commands use the locked checkout):
 
 | Check | Observed result |
 |---|---|
@@ -32,14 +33,33 @@ Current results (all local commands use the locked checkout; these are not hoste
 | New frontend regressions | 3 suites, 40 tests passed after the fixes. |
 | Authorization regression selection excluding the separately run native HTTP and collaboration files | 422 tests passed. |
 | Concurrent native HTTP saves | Both resource types and both audit modes passed: 4/4. |
-| Concurrent native HTTP deletions | Before fixes: 2 failures and 4 passes. After fixes: flow and bulk-flow cases passed before a Windows package-discovery timeout in setup; remaining cases are being rerun. |
-| Browser acceptance | First current run: J1/J2 passed, J3 failed on owner-observed graph content, J4-J8 did not run. A trace-enabled rerun is investigating the save sequence. These outcomes are not acceptance. |
+| Concurrent native HTTP deletions | Before fixes: 2 failures and 4 passes. The local rerun encountered a Windows package-discovery timeout in setup. All six cases subsequently passed on both engines and Python versions in hosted native acceptance. |
+| HTTP success-response transaction observation | 4/4 passed: PATCH/PUT on flows/projects expose committed state when the application sends the success response. |
+| Browser acceptance | First current run: J1/J2 passed, J3 failed on owner-observed graph content, J4-J8 did not run. The trace-enabled rerun passed all eight with one worker, zero retries and strict IBM scans. The subsequent J3 request/response correlation assertion is awaiting its final rerun. |
 | Canonical OpenAPI generator | Output is byte-identical to `docs/openapi/openapi.json`. |
 | Feature Biome | 116 files passed. The three diagnostics in a wider working-tree check belong to untouched message-query files with user-owned edits. |
 | Scoped Mypy | 9 changed production files passed using explicit backend/LFX package paths, the workspace Python executable, and skipped import traversal. |
 | Full TypeScript comparison | Clean fork base: 254 errors. Candidate: 247 errors. After normalizing checkout paths, no new diagnostics and 7 resolved diagnostics. |
 | CI scripts | 152 passed and 4 failed on Windows. All four failures reproduce in the clean fork-base checkout: bundle-release planning uses Windows separators in Git object paths. Authz/endpoint/principal contract selection passed 24/24. |
-| SQLite/PostgreSQL full acceptance; Python 3.10/3.14; builds; hosted CI | Final candidate runs pending. |
+| LFX default service | 17/17 passed in an isolated LFX environment. |
+| Assistant MCP runner/component baselines | 39/39 passed after correcting synchronous database-bind mocks; existing assertions are unchanged. |
+| Repository pre-commit hooks | Applicable hooks passed over 226 feature paths. Secret scanning required two explicit synthetic-test-value annotations and five existing baseline line-number updates; all 853 secret identities and classifications are unchanged. |
+| Frontend production build | Passed. |
+| Documentation production build | Passed after removing the inherited `DEBUG=release` variable from the child process. Existing OpenAPI-reference and historical-anchor warnings remain. |
+
+Hosted run [33931056991](https://github.com/waqoor/langflow/actions/runs/33931056991), attempt 1, checks out exactly `c0a9e4823520c6d5be67086a4234a9c705f1b43d`:
+
+| Check | Observed result |
+|---|---|
+| Python 3.10 / PostgreSQL 16 | [242 passed](https://github.com/waqoor/langflow/actions/runs/33931056991/job/101209591821), zero skipped/failed. |
+| Python 3.10 / SQLite | [242 passed](https://github.com/waqoor/langflow/actions/runs/33931056991/job/101209591920), zero skipped/failed. |
+| Python 3.14 / PostgreSQL 16 | [242 passed](https://github.com/waqoor/langflow/actions/runs/33931056991/job/101209591728), zero skipped/failed. |
+| Python 3.14 / SQLite | [242 passed](https://github.com/waqoor/langflow/actions/runs/33931056991/job/101209591808), zero skipped/failed. |
+| Required sharing browser execution | [Passed](https://github.com/waqoor/langflow/actions/runs/33931056991/job/101209831295); report-validator job is pending. |
+| ARM64 Docker images | [Passed on the first attempt](https://github.com/waqoor/langflow/actions/runs/33931056991/job/101209592111). |
+| Documentation build | [Passed](https://github.com/waqoor/langflow/actions/runs/33931056991/job/101209591970). The separate IBM docs scan remains running. |
+| Broad backend unit group | Two existing assistant session mocks fail after the common flow guard starts inspecting the database dialect. Fixture-only corrections retain the locked-flow assertions and require a fresh CI run. Other unit groups were cancelled by the existing matrix fail-fast setting. |
+| Full run / CI Success | Still running; no overall PASS claim. |
 
 Evidence logs are under the local temporary directory `langflow-authz-20260905-current`. The clean comparison checkout is detached at the exact fork-main base above. Later sections retain the prior candidate's history; their PASS labels must not be transferred to the current candidate without the final reruns.
 
@@ -49,9 +69,9 @@ The sole implementation authority is `auth_share_implementation_plan.md`, revisi
 
 - `origin` is the user fork, `https://github.com/waqoor/langflow.git`.
 - `upstream` is read-only for this work: fetch is `https://github.com/langflow-ai/langflow.git` and push is disabled.
-- The tested implementation is 15 commits ahead of the fork-main base and zero commits behind it.
+- The implementation descends from the exact fork-main base above.
 - No parallel identity system, policy database, API version, resource-copy path, or shadow authorization runtime was added.
-- No push, pull request, merge to `main`, release, deployment, production setting change, or production credential use was performed.
+- The feature branch was pushed to the fork and its build/test workflow was dispatched. No pull request, merge to `main`, release, deployment, production setting change, or production credential use was performed.
 
 ## Implemented contract
 
@@ -159,7 +179,7 @@ npm run --prefix docs build
 
 PostgreSQL evidence used a disposable `postgres:16` container, synthetic test-only credentials, and a fresh database. Disposable databases/containers were removed after verification.
 
-## Eight connected browser journeys
+## Prior candidate: eight connected browser journeys
 
 Runtime: Windows x64, uv Python 3.12, Node/npm from the repository development environment, repository Playwright/Chromium, SQLite, the real `LangflowAuthorizationService`, and distinct admin/owner/direct-recipient/team-recipient accounts.
 
@@ -191,7 +211,7 @@ Local browser output is namespaced under `src/frontend/playwright-report-authz/`
 
 The map identifies primary coverage. It does not inflate parameterized tests into extra browser journeys or claim unexecuted hosted/architecture combinations.
 
-## Baseline and runner classification
+## Prior candidate: baseline and runner classification
 
 - The three full-Jest failures are date/locale-sensitive baseline assertions in files unchanged by the feature, not authorization failures.
 - The full TSC backlog contains no diagnostic in the final audit delta.
@@ -243,6 +263,9 @@ The authoritative requirements are in `auth_share_implementation_plan.md`. This 
 | New concurrent HTTP save regression, with auditing both enabled and disabled | 14.1-14.2, 15.3 | Exactly one of two writes with the same observed revision succeeds; the other returns 412. SQLite must acquire its writer transaction before reading the revision. | Both flow/project variants verify the winning persisted content and a single revision increment, independent of audit configuration. |
 | New concurrent HTTP update versus single-flow, bulk-flow or project deletion | 14.1-14.2, 15.3 | Deletion must use the same locked revision contract as updates. | Real concurrent requests verify that a successful edit survives a stale delete, or a successful delete makes the edit return 404, with auditing enabled and disabled. |
 | `test_fetch.py` SQL-shape fixture | 14.1-14.2, 15.3 | Supply the PostgreSQL dialect on the fake session now that the production helper selects the database-specific lock operation. | Existing owner predicates, FOR UPDATE and identity-map refresh assertions remain unchanged; real SQLite/PostgreSQL HTTP tests cover the lock behavior. |
+| New HTTP success-response transaction regression | 14.1-14.2, 15.3 | A successful PATCH/PUT response must describe committed flow/project state. | A transport observer reads the actual database when the application emits its success response; the native service, route, mutation and transaction remain real. |
+| J3 autosave response matching | 14.3, 19.5 | The edit journey previously accepted the first workflow PATCH response, which could belong to editor hydration. Require the user's unique marker in both the submitted graph and successful response. | The owner API read and owner editor must still show the same marker; all eight journeys, real requests, and zero retries remain required. |
+| Assistant MCP runner and component-update session fixtures | 14.1-14.2, 15.3 | Existing untyped `AsyncMock` sessions incorrectly model SQLAlchemy's synchronous `get_bind()` as async. Declare their PostgreSQL dialect when the shared flow guard inspects the engine. | Locked-flow cases must still refresh under `FOR UPDATE`, reject the write and skip persistence; the assistant commits only the pre-run transaction release. Native SQLite/PostgreSQL HTTP acceptance covers actual database locking. |
 
 The current candidate is not yet accepted. The prior candidate's runtime record covers the native service, database engines, migrations, frontend, and browser journeys; additional defects found during continuation require fresh final validation. Hosted Python 3.10/3.14, ARM64 images, fork Actions, and any PR integration SHA must not be described as passing until those systems produce evidence for the delivered candidate.
 

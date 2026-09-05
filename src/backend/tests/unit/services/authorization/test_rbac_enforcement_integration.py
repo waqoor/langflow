@@ -592,7 +592,7 @@ async def test_native_collaborator_save_response_keeps_owner_credentials_private
     owner_name, editor_name = f"owner_{uuid4().hex}", f"editor_{uuid4().hex}"
     owner_id, editor_id = await _make_user(owner_name), await _make_user(editor_name)
     owner_headers, editor_headers = await _login(client, owner_name), await _login(client, editor_name)
-    secret = "synthetic-owner-credential-for-redaction"  # noqa: S105
+    secret = "synthetic-owner-credential-for-redaction"  # noqa: S105  # pragma: allowlist secret
     if resource_type == "flow":
         resource_id = await _make_flow(owner_id, f"SecretFlow_{uuid4().hex}")
         async with session_scope() as session:
@@ -794,3 +794,52 @@ async def test_native_delete_cannot_remove_a_concurrently_updated_revision(
         assert saved.status_code == 404, saved.text
         assert deleted.status_code in {200, 204}, deleted.text
         assert (await client.get(path, headers=headers)).status_code == 404
+
+
+@pytest.mark.parametrize("resource_type", ["flow", "project"])
+@pytest.mark.parametrize("method", ["PATCH", "PUT"])
+async def test_native_save_response_is_committed_before_it_is_sent(
+    client, native_authorization, monkeypatch, resource_type, method
+):
+    assert await native_authorization.is_enabled()
+    username = f"commit_owner_{uuid4().hex}"
+    owner_id = await _make_user(username)
+    headers = await _login(client, username)
+    resource_id = await (
+        _make_flow(owner_id, "Committed flow")
+        if resource_type == "flow"
+        else _make_project(owner_id, "Committed project")
+    )
+    path = f"/api/v1/{'flows' if resource_type == 'flow' else 'projects'}/{resource_id}"
+    observed = await client.get(path, headers=headers)
+    assert observed.status_code == 200, observed.text
+    marker = f"committed-{uuid4().hex}"
+    visible_at_success = []
+    # Observe ASGI output without replacing the production application.
+    transport = client._transport
+    application = transport.app
+
+    async def observe_response(scope, receive, send):
+        async def inspect_send(message):
+            if (
+                scope.get("path") == path
+                and scope.get("method") == method
+                and message["type"] == "http.response.start"
+                and message["status"] == 200
+            ):
+                async with session_scope() as session:
+                    row = await session.get(Flow if resource_type == "flow" else Folder, resource_id)
+                    visible_at_success.append(row.description)
+            await send(message)
+
+        await application(scope, receive, inspect_send)
+
+    monkeypatch.setattr(transport, "app", observe_response)
+    response = await client.request(
+        method,
+        path,
+        headers={**headers, "If-Match": observed.headers["etag"]},
+        json={"name": observed.json()["name"], "description": marker},
+    )
+    assert response.status_code == 200, response.text
+    assert visible_at_success == [marker]
