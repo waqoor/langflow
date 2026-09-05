@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from langflow.api.utils import CurrentActiveUser, DbSessionReadOnly
+from langflow.api.utils import CurrentActiveUser, DbSession
 from langflow.services.auth.context import current_auth_context_for_authz
 from langflow.services.authorization.access_ceiling import (
     EXTERNAL_ACCESS_ADMIN,
@@ -271,7 +271,7 @@ async def _apply_owner_permissions(
 async def get_effective_permissions(
     body: EffectivePermissionsRequest,
     current_user: CurrentActiveUser,
-    session: DbSessionReadOnly,
+    session: DbSession,
 ) -> EffectivePermissionsResponse:
     """Return per-resource allowed actions for the current user.
 
@@ -287,6 +287,7 @@ async def get_effective_permissions(
             detail=f"resource_ids capped at {_MAX_RESOURCE_IDS}",
         )
 
+    # Authentication may have JIT-created this user in the shared request session.
     actor = await load_active_user(session, current_user.id)
     if actor is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
