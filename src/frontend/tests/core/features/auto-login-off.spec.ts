@@ -112,6 +112,17 @@ test(
       { headers: revision ? { "If-Match": revision } : {} },
     );
     expect(disposedProject.status()).toBe(204);
+    const variablesResponse = await request.get("/api/v1/variables/");
+    expect(variablesResponse.status()).toBe(200);
+    const variables: Array<{ id: string; is_owner: boolean }> =
+      await variablesResponse.json();
+    for (const variable of variables) {
+      expect(variable.is_owner).toBe(true);
+      const disposedVariable = await request.delete(
+        `/api/v1/variables/${variable.id}`,
+      );
+      expect(disposedVariable.status()).toBe(204);
+    }
     await deleteUserViaApi(page, created.id);
 
     const recreated = await createActiveUserViaApi(page, {
