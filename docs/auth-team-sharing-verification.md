@@ -3,16 +3,49 @@
 **Canonical repository:** `https://github.com/waqoor/langflow` \
 **Delivery branch:** `feat/auth-team-sharing` \
 **Fork-main base:** `e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5` \
-**Previous hosted candidate:** `41d269885bd9c968bf41a0f3274448ac902ecefe` \
-**Previous candidate tree:** `05c465c1b76a3862fb705367b7aaae7bdc3cc346` \
+**Code and test candidate:** `9896d8f024713d671a71be3a644869b4732e9934` \
+**Candidate tree:** `a6bf170e17c7beb6658aec7296be4bffe1c362e7` \
 **Migration:** `bf6c22022777`, down revision `c6d8e0f2a4b7`, phase `MIGRATE` \
 **Verification date:** September 5, 2026 \
-**Current production implementation:** `c0a9e4823520c6d5be67086a4234a9c705f1b43d` \
-**Status:** Scope corrections after `57199b480a` are complete locally and await final integrated verification. Extra acceptance requirements and unrelated cleanup are removed as recorded below. Required sharing, revision, lifecycle, migration and concurrency coverage remains intact. No overall acceptance is claimed from the previous hosted candidate.
+**Status:** Scope corrections are implemented and committed. All eight journeys, their report gate and the four native database/Python jobs passed on hosted candidate `9896d8f024`; the feature's four IBM scans report zero violations. Full CI [33936593227](https://github.com/waqoor/langflow/actions/runs/33936593227) finished with a failure in an existing competing-delete test fixture affected by the contribution's transaction locking. Its fixture correction and a matching single-delete correction passed all 90 existing flow API tests locally. The affected CI checks remain to be rerun; overall acceptance is not yet claimed.
+
+## Scope-corrected candidate evidence
+
+| Check | Status | Exact evidence and boundary |
+|---|---|---|
+| Native SQLite, Python 3.10 | PASS | [242 passed, no failures/skips](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736082), candidate `9896d8f024`, 216.80 seconds. |
+| Native SQLite, Python 3.14 | PASS | [242 passed, no failures/skips](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736110), candidate `9896d8f024`, 179.76 seconds. |
+| Native PostgreSQL 16, Python 3.10 | PASS | [242 passed, no failures/skips](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736097), candidate `9896d8f024`, 247.04 seconds. |
+| Native PostgreSQL 16, Python 3.14 | PASS | [242 passed, no failures/skips](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736105), candidate `9896d8f024`, 169.88 seconds. |
+| Local connected browser journeys | PASS | Candidate `a96d823c10`: 8 collected/executed/passed in 7.9 minutes, one worker, zero retries, real distinct users and native enforcement. Local tracing was disabled; assertions and strict IBM scans remained enabled. The four current reports show zero violations and 7,201 passing checks. The stale, removed whole-editor scan report is excluded. |
+| Final hosted connected browser journeys | PASS | [Execution job 101225941476](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225941476) and [report gate 101228192607](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101228192607), candidate `9896d8f024`: eight collected/executed/passed, zero skipped/failed/flaky, one worker, zero retries, full traces, 11.2 minutes. JSON artifact `9960840882` records these counts. |
+| Final hosted feature accessibility | PASS | IBM checker 4.0.26: four feature reports, zero violations and 6,558 passing checks. Artifact `9960658836` contains Teams administration, member Teams, Shared With Me and the populated Share dialog; no whole-editor acceptance scan or unrelated graph repair is included. Runtime: Playwright 1.60.0 / Chromium 148.0.7778.96, hosted Node 22 / Python 3.13. |
+| CI script contracts | PASS | [157 passed](https://github.com/waqoor/langflow/actions/runs/33934796737/job/101220505367), candidate `5c269be67c`, four upstream warnings. |
+| Full TypeScript comparison | FAIL (existing baseline) | `a96d823c10`: 252 diagnostics versus 254 on clean fork base; no introduced diagnostics, two resolved by required contract types. Generic sidebar typing cleanup was removed. This is not a claim that full TSC passes. |
+| Scoped backend Mypy | PASS | Nine native authorization contract modules passed with explicit backend/LFX paths and skipped import traversal after the scope removals. This is not a full-monorepo typing result. |
+| Scope-removal regressions | PASS | 16 backend destination/publication cases, 63 frontend cases in five suites, 7 sidebar cases, and 81 browser utility cases passed. The original exact folder-store equality assertion passed separately. |
+| Full project route regression file | PASS | Candidate `9896d8f024`: 66 passed, one existing skip and one upstream warning in 619.52 seconds. The corrected starter-project fixture passed. `test_read_projects_empty` retains its pre-existing skip when default projects exist; it is not counted as executed coverage. |
+| Flow retry fixture follow-up | PASS | `uv run --no-sync pytest src/backend/tests/unit/api/v1/test_flows.py -q --tb=short`: all 90 existing tests passed with one upstream warning in 791.29 seconds on local Python 3.12 / SQLite. Both adjusted fixtures retain their original assertions and use the real rollback before the competing write. The earlier targeted bulk-delete run passed four tests with 86 deselected. No production code or native acceptance test changed. |
+| Final frontend Jest | PASS | [566 suites, 6,654 tests passed](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736244), candidate `9896d8f024`, 1,030.766 seconds. This workflow excludes its separately owned accessibility suites; focused local accessibility checks are recorded separately. |
+| Inherited core browser regression | PASS | Candidate `9896d8f024`: all 35 shards succeeded; the [merged report gate](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101230365082) validated 173 collected, 161 passed, 12 skipped, zero failed and zero flaky tests. The skips retain existing auto-login, optional-bundle, credential and disabled-test conditions; none is counted as feature acceptance. JSON artifact `9960966459` records the counts. |
+| Completed inherited backend unit groups | PASS | `9896d8f024`, Python 3.14: [group 1](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736555) has 2,696 passed / 124 skipped / three expected failures; [group 5](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736571) has 2,684 passed / 139 skipped. Each required one inherited pytest rerun: `test_database.py::test_create_flow` and `test_facade_real_services.py::test_startup_terminalizes_unavailable_encrypted_overrides[sqlite-missing]`, respectively. Their causes are unclassified; these are not clean first-attempt results or proof of baseline defects. |
+| Final LFX regression suite | PASS | `9896d8f024`: [Python 3.10](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736402) has 8,046 passed / 60 skipped; [Python 3.14](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736275) has 8,049 passed / 57 skipped. Each retains five existing expected failures and one unexpected pass; no new skip/xfail was added for this contribution. |
+| Final backend integration | PASS | `9896d8f024`: [Python 3.10](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736285) and [Python 3.14](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736291) each passed 76 tests, with eight existing skips and 65 deselections in the inherited workflow. |
+| Final bundle-installed regression | PASS | `9896d8f024`: [Python 3.10](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736310) and [Python 3.14](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736300) each passed 299 tests with 62 skips and 19 deselections, followed by 10 passing HTTP-entrypoint tests. |
+| Final CLI checks | PASS | Existing CLI jobs passed on `9896d8f024` for [Python 3.10](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736395) and [Python 3.14](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736321). |
+| Final ARM64 candidate image | PASS | [Job 101225736304](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736304) passed on its first attempt for `9896d8f024`; the conditional retry job correctly skipped. |
+| Final documentation build | PASS | [Job 101225736276](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736276), candidate `9896d8f024`. |
+| Candidate hooks | PASS | The three-path delta committed in `9896d8f024` passed all applicable repository hooks using Git Bash on Windows, including Ruff, both Biome hooks and secret scanning. A preceding WSL Bash invocation passed an empty filename to Biome; its incidental formatting was reversed before the successful scoped run. |
+
+Candidate `9896d8f024` changes only the project-session test fixture, five Teams page-readiness assertions and this ledger after `a96d823c10`. The latter restores the unrelated sidebar typing change and scopes the Share-dialog scan fixture after `5c269be67c`. Each result above identifies its actual checkout explicitly; earlier results are not relabelled as tests of the final commit. The separate browser [run 33935909962](https://github.com/waqoor/langflow/actions/runs/33935909962) also passed all eight journeys and report validation on `9896d8f024` before the full CI browser job completed.
+
+Full run `33936593227` finished with 66 successful jobs, six skipped, seven backend unit jobs cancelled by the inherited fail-fast matrix, and two failed. The failing [Python 3.14 group 3](https://github.com/waqoor/langflow/actions/runs/33936593227/job/101225736492) reported one failure, 595 passes, 52 skips and six reruns on its last inherited action attempt. `test_bulk_delete_retry_rebuilds_authorized_owner_map` tried a competing SQLite delete while the request held its writer transaction; the competing write failed with `database is locked`, so the final deleted count was two instead of one. `CI Success` correctly rejected the run. The five Python 3.10 unit groups and Python 3.14 groups 2 and 4 were cancelled, not passed. The two follow-up fixture changes move the competing write after the real retry helper's rollback, retaining the original assertions and production behavior; their test-contract entries below were recorded before editing, and the full local flow file now passes.
+
+The complete earlier run [33934794698](https://github.com/waqoor/langflow/actions/runs/33934794698) finished with 61 successful jobs, eight skipped, nine backend jobs cancelled by the inherited fail-fast matrix, and four failed. Failures were the project-session fixture, J1's five-second Teams readiness assertion, its rejecting report gate, and `CI Success`. Both underlying causes are recorded in the ledger and corrected in `9896d8f024`. The final CI dispatch uses `run-all-tests=false`, `base-ref=e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5`, Python 3.10/3.14, `tests/core`, and the existing hosted Linux/ARM64 runners; no path selector or gate was weakened. The fork base and pushed candidate were rechecked before dispatch.
 
 ## Previous hosted candidate validation
 
-The full build/test run [33933277196](https://github.com/waqoor/langflow/actions/runs/33933277196), attempt 1, used the historical candidate above and was cancelled when the scope-correction candidate was dispatched. It is incomplete evidence, not final acceptance. No release or deployment was enabled.
+The full build/test run [33933277196](https://github.com/waqoor/langflow/actions/runs/33933277196), attempt 1, used historical candidate `41d269885bd9c968bf41a0f3274448ac902ecefe`, tree `05c465c1b76a3862fb705367b7aaae7bdc3cc346`, and was cancelled when the scope-correction candidate was dispatched. It is incomplete evidence, not final acceptance. No release or deployment was enabled.
 
 The separate [CI Scripts Tests run 33933278780](https://github.com/waqoor/langflow/actions/runs/33933278780/job/101216133018) on the same candidate passed all 157 tests with four upstream warnings. Native acceptance passed 246 cases on Python 3.10 with both engines and Python 3.14 with SQLite. [Python 3.14 / PostgreSQL](https://github.com/waqoor/langflow/actions/runs/33933277196/job/101216145957) failed the project PUT commit-visibility assertion after 72 passes. Core browser shard 13 separately failed before test execution when `setup-uv` timed out fetching its version manifest. Neither failure is counted as passing acceptance.
 
@@ -51,7 +84,7 @@ The new regression cases first demonstrated these failures:
 - Concurrent SQLite saves, bulk-flow deletes, and project deletes could lose the revision race when audit writes were disabled.
 - The PostgreSQL CI setting did not reach the HTTP application's database fixture. HTTP clients now use private PostgreSQL databases when that engine is selected, and assert the running engine's dialect.
 
-Current local results (all commands use the locked checkout):
+Earlier continuation results before scope removal (all commands used their locked checkout; the current table above takes precedence):
 
 | Check | Observed result |
 |---|---|
@@ -129,11 +162,11 @@ The sole implementation authority is `auth_share_implementation_plan.md`, revisi
 - Frontend hook ordering, permission-query test seams, dialog reopening, folder-store typing, and affected fixtures were repaired.
 - Accidentally tracked Playwright reports, test results, the test secret-key file, and the 12.48 MB SQLite test database were removed and their namespaced output directories are ignored.
 
-### Strict browser accessibility repairs in `dbb0c20e54`
+### Historical accessibility changes in `dbb0c20e54` (scope removals noted)
 
-- Dynamic node and field names are encoded at the shared DOM-ID boundary, so `aria-labelledby` remains one valid ID reference even when a generated node ID contains spaces or punctuation.
+- The global node/field DOM-ID encoding change was later removed as unrelated to this contribution.
 - Workflow and project share-dialog state is owned by the persistent toolbar/card/sidebar surface. The originating Radix menu now closes before the modal opens, so its portalled menu is not left exposed outside a landmark behind the dialog.
-- Focused Jest/axe regression coverage exercises both the unsafe node ID and the dropdown-to-dialog lifecycle.
+- The extra node-ID coverage was removed; dropdown-to-dialog lifecycle coverage remains.
 
 ### Final consistency and Windows acceptance repairs in `170dd9e1d2`
 
@@ -141,7 +174,7 @@ The sole implementation authority is `auth_share_implementation_plan.md`, revisi
 - SQLite writers establish the database-wide writer transaction before authoritative invariant reads. PostgreSQL locked ORM reads use `populate_existing` so an identity-map object loaded for the preliminary hint cannot bypass the post-lock canonical state.
 - A stale share whose user or team recipient is no longer eligible remains revocable, while create/update continue to reject an ineligible recipient. Multi-resource cleanup locks all share rows once in UUID order.
 - The Share dialog and Team details were split into focused subcomponents below the repository complexity threshold. Team-member pagination uses a 51-row lookahead for 50-row pages and resets when the selected team changes; inline mutation errors are announced.
-- Vite excludes generated Playwright result, report, coverage, and blob directories from its watcher. This prevents Windows `EBUSY` crashes when Chromium holds a trace file open, with a cross-platform path-policy regression test.
+- The general Vite generated-artifact watcher workaround and its added test were later removed as out of scope. Local scoped acceptance uses `--trace=off`; hosted Linux acceptance retains full traces.
 
 ## Prior candidate verification results
 
@@ -258,18 +291,20 @@ The map identifies primary coverage. It does not inflate parameterized tests int
 - Migration `bf6c22022777` extends existing tables and does not create parallel team/share models.
 - Upgrade, legacy repair/backfill, metadata parity, constraints, and downgrade are covered on SQLite and PostgreSQL 16.
 - Canonical OpenAPI generation contains capabilities, permissions, recipients, shares, summaries, teams/members, and dynamic resource paths.
-- The acceptance candidate changes exactly 230 paths relative to the fork-main base (24,288 insertions and 2,319 deletions):
+- Code/test candidate `9896d8f024` changes exactly 224 paths relative to the fork-main base (24,219 insertions and 2,365 deletions). The pending follow-up changes two existing fixtures in `test_flows.py` and this verification record:
 
 ```bash
 git diff --name-status \
-  e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5..41d269885bd9c968bf41a0f3274448ac902ecefe
+  e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5..9896d8f024713d671a71be3a644869b4732e9934
 ```
 
 Immutable comparison:
 
-`https://github.com/waqoor/langflow/compare/e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5...41d269885bd9c968bf41a0f3274448ac902ecefe`
+`https://github.com/waqoor/langflow/compare/e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5...9896d8f024713d671a71be3a644869b4732e9934`
 
 ## Final acceptance boundary
+
+The native matrix and browser acceptance passed on `9896d8f024`. Full regression acceptance remains incomplete because of the documented fixture failure and cancelled unit groups. Only the attributable fixture corrections and their affected checks remain in this follow-up; unrelated failures and cleanup are outside the contribution.
 
 ## Test-contract change ledger (September 5 review)
 
@@ -302,6 +337,8 @@ The authoritative requirements are in `auth_share_implementation_plan.md`. This 
 | J3 autosave response matching | 14.3, 19.5 | The edit journey previously accepted the first workflow PATCH response, which could belong to editor hydration. Require the user's unique marker in both the submitted graph and successful response. | The owner API read and owner editor must still show the same marker; all eight journeys, real requests, and zero retries remain required. |
 | Assistant MCP runner and component-update session fixtures | 14.1-14.2, 15.3 | Existing untyped `AsyncMock` sessions incorrectly model SQLAlchemy's synchronous `get_bind()` as async. Declare their PostgreSQL dialect when the shared flow guard inspects the engine. | Locked-flow cases must still refresh under `FOR UPDATE`, reject the write and skip persistence; the assistant commits only the pre-run transaction release. Native SQLite/PostgreSQL HTTP acceptance covers actual database locking. |
 | `test_projects.py::test_update_project_cannot_rename_system_starter` session fixture | 14.1-14.2, 15.3 | Hosted job `101220526842` fails before its starter-project assertion because the contribution's locked project fetch calls synchronous `get_bind()` on an untyped `AsyncMock`. Supply the fixture's PostgreSQL dialect with a synchronous mock, matching SQLAlchemy. | Retain the existing 403 status and cannot-be-renamed message assertions. The protected starter project and production locking behavior are unchanged. |
+| `test_flows.py::test_bulk_delete_retry_rebuilds_authorized_owner_map` competing-write timing | 14.2, 15.3 | Hosted job `101225736492` shows the simulated competing delete failing with SQLite `database is locked`: the contribution now holds the required writer transaction before the injected error. Move that competing write to the next attempt boundary, after the real `run_with_lock_retry` rollback and before the new authoritative read. | Keep the real retry helper and competing database session, assert the failed request transaction is already closed, and preserve the exact deleted-count and both owner-map assertions. No production lock, retry rule, or assertion is removed. |
+| `test_flows.py::test_delete_flow_retry_is_idempotent_when_concurrent_delete_wins` uses the same competing-write window | 14.2, 15.3 | The unchanged local test timed out with the competing SQLite delete blocked by the request's writer transaction. Inject its existing lock error first, then perform the competing delete after the real retry helper rolls back. | Retain the real retry helper, real competing database write, 200 response and exact one-call deletion assertion; additionally verify the request transaction has closed before the competing write. |
 | Existing auto-login-off user CRUD browser journey | 15.2, TEAM-21 | A newly created user owns a default project, so implicit cascade deletion must return `409 RESOURCE_OWNERSHIP_REQUIRES_DISPOSITION`. Explicitly dispose of that test-owned project and the default variables created on login through the owner's authenticated API before asserting successful admin account deletion. | Retain successful creation, deletion, recreation, rename, login and cross-user flow isolation. Assert the ownership rejection before cleanup; do not ignore failed cleanup requests. |
 | Hosted Playwright artifact report gate | 19.5, 23.9 | `actions/download-artifact@v8` flattens a sole matching artifact into the destination root. Resolve that documented runtime layout while retaining named-directory handling for multiple artifacts and attempts. | Reject missing/extra/ambiguous reports, retain newest-attempt selection per shard, and run the existing full JSON journey/zero-retry validator after merging. |
 | Jest reporting on read-only fork/Dependabot events | 23.6, 23.10 | Keep the existing JUnit action's local parsing and failure checks active in annotation-only mode when check-writing permission is unavailable; restrict PR comments to trusted same-repository events. | Missing, malformed, failed and zero-passed reports fail validation. Upload the raw JUnit file; do not conditionally skip Jest execution or result validation. |

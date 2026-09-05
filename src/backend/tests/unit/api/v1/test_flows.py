@@ -2121,13 +2121,24 @@ async def test_delete_flow_retry_is_idempotent_when_concurrent_delete_wins(
 
     async def concurrent_delete_then_lock(_session, target_flow_id):
         attempts["count"] += 1
-        async with session_scope() as competing_session:
-            target = await competing_session.get(Flow, target_flow_id)
-            if target is not None:
-                await competing_session.delete(target)
         raise OperationalError(statement, {"id": target_flow_id}, sqlite3.OperationalError("database is locked"))
 
+    original_retry = flows_module.run_with_lock_retry
+
+    async def retry_after_concurrent_delete(operation, *, session, description):
+        async def attempt_after_delete(attempt):
+            if attempt == 1:
+                assert not session.in_transaction()
+                async with session_scope() as competing_session:
+                    target = await competing_session.get(Flow, flow_id)
+                    assert target is not None
+                    await competing_session.delete(target)
+            return await operation(attempt)
+
+        return await original_retry(attempt_after_delete, session=session, description=description)
+
     monkeypatch.setattr(flows_module, "cascade_delete_flow", concurrent_delete_then_lock)
+    monkeypatch.setattr(flows_module, "run_with_lock_retry", retry_after_concurrent_delete)
 
     response = await client.delete(f"api/v1/flows/{flow_id}", headers=logged_in_headers)
 
@@ -2297,16 +2308,27 @@ async def test_bulk_delete_retry_rebuilds_authorized_owner_map(client: AsyncClie
         nonlocal first_delete
         if first_delete:
             first_delete = False
-            async with session_scope() as competing_session:
-                removed = await competing_session.get(Flow, flow_ids[1])
-                assert removed is not None
-                await competing_session.delete(removed)
             raise OperationalError(
                 statement,
                 {"id": target_flow_id},
                 sqlite3.OperationalError("database is locked"),
             )
         return await original_delete(session, target_flow_id)
+
+    original_retry = flows_module.run_with_lock_retry
+
+    async def retry_after_concurrent_removal(operation, *, session, description):
+        async def attempt_after_removal(attempt):
+            if attempt == 1:
+                # Competing SQLite writers can proceed after the real rollback.
+                assert not session.in_transaction()
+                async with session_scope() as competing_session:
+                    removed = await competing_session.get(Flow, flow_ids[1])
+                    assert removed is not None
+                    await competing_session.delete(removed)
+            return await operation(attempt)
+
+        return await original_retry(attempt_after_removal, session=session, description=description)
 
     async def record_guard_map(*, db, flow_owner_ids, operation):  # noqa: ARG001
         try:
@@ -2315,6 +2337,7 @@ async def test_bulk_delete_retry_rebuilds_authorized_owner_map(client: AsyncClie
             guard_maps.append(dict(flow_owner_ids))
 
     monkeypatch.setattr(flows_module, "cascade_delete_flow", delete_after_concurrent_removal)
+    monkeypatch.setattr(flows_module, "run_with_lock_retry", retry_after_concurrent_removal)
     monkeypatch.setattr(flows_module, "retry_flow_operation_on_deployment_guard", record_guard_map)
 
     response = await client.request(
