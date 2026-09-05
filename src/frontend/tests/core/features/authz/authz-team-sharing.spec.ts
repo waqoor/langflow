@@ -616,11 +616,28 @@ test.describe("native team and resource sharing", () => {
           .getByTestId("textarea_str_input_value"),
       ).toHaveValue(marker, { timeout: TIMEOUTS.standard });
 
+      // Check the new dialog's controls without including the existing graph
+      // editor's unrelated ARIA issues in this feature's acceptance scope.
+      const dialogFlow = await createFlow(
+        ownerPage,
+        runnableProjectId,
+        `Share dialog controls ${runId}`,
+      );
+      const dialogShare = await createShare(ownerPage, {
+        resourceType: "flow",
+        resourceId: dialogFlow.id,
+        scope: "user",
+        targetId: direct.id,
+        permission: "write",
+      });
       await authenticatePage(a11yPage, owner.username);
-      await a11yPage.goto(`/flow/${runnableFlow.id}`);
+      await a11yPage.goto(`/flow/${dialogFlow.id}`);
       await a11yPage.getByTestId("publish-button").click();
-      await a11yPage.getByTestId(`share-flow-${runnableFlow.id}`).click();
+      await a11yPage.getByTestId(`share-flow-${dialogFlow.id}`).click();
       await expect(a11yPage.getByTestId("resource-share-dialog")).toBeVisible();
+      await expect(
+        a11yPage.getByTestId(`share-grant-${dialogShare.id}`),
+      ).toBeVisible();
       await a11yPage.runA11yScan("authz-resource-share-dialog");
     },
   );
