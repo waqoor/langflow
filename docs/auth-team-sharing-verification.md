@@ -3,12 +3,18 @@
 **Canonical repository:** `https://github.com/waqoor/langflow` \
 **Delivery branch:** `feat/auth-team-sharing` \
 **Fork-main base:** `e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5` \
-**Prior tested implementation commit:** `170dd9e1d2e5024d484769515b7bb2c511f6ef77` \
-**Prior tested implementation tree:** `ae6fbd4713f182f55c4b77f13a73320e84cb2002` \
+**Acceptance candidate:** `41d269885bd9c968bf41a0f3274448ac902ecefe` \
+**Candidate tree:** `05c465c1b76a3862fb705367b7aaae7bdc3cc346` \
 **Migration:** `bf6c22022777`, down revision `c6d8e0f2a4b7`, phase `MIGRATE` \
 **Verification date:** September 5, 2026 \
 **Current production implementation:** `c0a9e4823520c6d5be67086a4234a9c705f1b43d` \
-**Status:** Required native backend matrix and browser execution passed on the current production implementation. The broader CI run found two assistant test-fixture incompatibilities; their corrections and additional response-ordering/browser assertions are undergoing final verification. Full CI acceptance remains pending.
+**Status:** Final integrated CI verification is in progress. The user reaffirmed that this contribution is limited to the plan and regressions caused by the contribution. A general response-before-commit assertion introduced during this continuation exceeds that boundary and is being removed; the pre-existing route transaction behavior is not being changed. Required sharing, revision, lifecycle, migration and concurrency coverage remains intact. This candidate is not accepted.
+
+## Final candidate validation
+
+The full build/test run is [33933277196](https://github.com/waqoor/langflow/actions/runs/33933277196), attempt 1. It uses the exact candidate above, both required Python versions and database engines, the dedicated zero-retry sharing invocation, the existing core regression suites, and ARM64 Docker validation. No release or deployment is enabled.
+
+The separate [CI Scripts Tests run 33933278780](https://github.com/waqoor/langflow/actions/runs/33933278780/job/101216133018) on the same candidate passed all 157 tests with four upstream warnings. Native acceptance passed 246 cases on Python 3.10 with both engines and Python 3.14 with SQLite. [Python 3.14 / PostgreSQL](https://github.com/waqoor/langflow/actions/runs/33933277196/job/101216145957) failed the project PUT commit-visibility assertion after 72 passes. Core browser shard 13 separately failed before test execution when `setup-uv` timed out fetching its version manifest. Neither failure is counted as passing acceptance.
 
 ## September 5 continuation
 
@@ -34,7 +40,7 @@ Current local results (all commands use the locked checkout):
 | Authorization regression selection excluding the separately run native HTTP and collaboration files | 422 tests passed. |
 | Concurrent native HTTP saves | Both resource types and both audit modes passed: 4/4. |
 | Concurrent native HTTP deletions | Before fixes: 2 failures and 4 passes. The local rerun encountered a Windows package-discovery timeout in setup. All six cases subsequently passed on both engines and Python versions in hosted native acceptance. |
-| HTTP success-response transaction observation | 4/4 passed: PATCH/PUT on flows/projects expose committed state when the application sends the success response. |
+| Additional generic HTTP success-response transaction observation | OUT OF SCOPE. The initial four-case observer passed locally but failed on hosted PostgreSQL. A stronger local route observer produced 5 failures and 3 passes, exposing dependency-teardown commit timing already present in the fork base. These newly introduced generic assertions are removed in response to the user's scope correction; no upstream transaction cleanup is included and no failure is reclassified as passing. |
 | Browser acceptance | First current run: J1/J2 passed, J3 failed on owner-observed graph content, J4-J8 did not run. The trace-enabled rerun passed all eight. The final run on `c68aa684fd` also passed all eight with the stronger J3 request/response correlation assertion, one worker, zero retries and strict IBM scans. |
 | Existing account CRUD browser journey | Passed with one worker and zero retries after explicit owner-scoped cleanup of the default project and login-created variables. The 409 ownership rejection, successful delete/recreate/rename, user login and cross-user flow isolation all remain asserted. |
 | Canonical OpenAPI generator | Output is byte-identical to `docs/openapi/openapi.json`. |
@@ -119,7 +125,7 @@ The sole implementation authority is `auth_share_implementation_plan.md`, revisi
 
 ## Prior candidate verification results
 
-The following results were recorded for the prior candidate identified at the top. Current continuation results and unresolved failures take precedence. Where a Windows runner required a split run, that boundary is stated rather than hidden.
+The following results were recorded for prior commit `170dd9e1d2e5024d484769515b7bb2c511f6ef77`, tree `ae6fbd4713f182f55c4b77f13a73320e84cb2002`. Current candidate results and unresolved failures take precedence. Where a Windows runner required a split run, that boundary is stated rather than hidden.
 
 | Check | Status | Actual result and boundary |
 |---|---|---|
@@ -232,16 +238,16 @@ The map identifies primary coverage. It does not inflate parameterized tests int
 - Migration `bf6c22022777` extends existing tables and does not create parallel team/share models.
 - Upgrade, legacy repair/backfill, metadata parity, constraints, and downgrade are covered on SQLite and PostgreSQL 16.
 - Canonical OpenAPI generation contains capabilities, permissions, recipients, shares, summaries, teams/members, and dynamic resource paths.
-- The tested implementation changes exactly 219 paths relative to the fork-main base:
+- The acceptance candidate changes exactly 230 paths relative to the fork-main base (24,288 insertions and 2,319 deletions):
 
 ```bash
 git diff --name-status \
-  e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5..170dd9e1d2e5024d484769515b7bb2c511f6ef77
+  e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5..41d269885bd9c968bf41a0f3274448ac902ecefe
 ```
 
 Immutable comparison:
 
-`https://github.com/waqoor/langflow/compare/e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5...170dd9e1d2e5024d484769515b7bb2c511f6ef77`
+`https://github.com/waqoor/langflow/compare/e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5...41d269885bd9c968bf41a0f3274448ac902ecefe`
 
 ## Final acceptance boundary
 
@@ -268,7 +274,7 @@ The authoritative requirements are in `auth_share_implementation_plan.md`. This 
 | New concurrent HTTP save regression, with auditing both enabled and disabled | 14.1-14.2, 15.3 | Exactly one of two writes with the same observed revision succeeds; the other returns 412. SQLite must acquire its writer transaction before reading the revision. | Both flow/project variants verify the winning persisted content and a single revision increment, independent of audit configuration. |
 | New concurrent HTTP update versus single-flow, bulk-flow or project deletion | 14.1-14.2, 15.3 | Deletion must use the same locked revision contract as updates. | Real concurrent requests verify that a successful edit survives a stale delete, or a successful delete makes the edit return 404, with auditing enabled and disabled. |
 | `test_fetch.py` SQL-shape fixture | 14.1-14.2, 15.3 | Supply the PostgreSQL dialect on the fake session now that the production helper selects the database-specific lock operation. | Existing owner predicates, FOR UPDATE and identity-map refresh assertions remain unchanged; real SQLite/PostgreSQL HTTP tests cover the lock behavior. |
-| New HTTP success-response transaction regression | 14.1-14.2, 15.3 | A successful PATCH/PUT response must describe committed flow/project state. | A transport observer reads the actual database when the application emits its success response; the native service, route, mutation and transaction remain real. |
+| Additional generic HTTP response-before-commit assertions, introduced in `c68aa684fd` and extended locally | User's explicit scope correction; plan 14 requires atomic revision checks but does not mandate a generic ASGI response-timing redesign | Remove only this continuation's extra test function and abandon the proposed general transaction cleanup. The fork base already uses `flush()` plus request-dependency commit in these routes/helpers. Record the failed observation as an excluded upstream behavior, not a fixed contribution defect. | No upstream test is removed. All required missing/stale revision, concurrent save/delete, native enforcement, collaborator-response redaction, creation and inheritance cases remain. The required hosted selection returns from 246 to 242 cases. |
 | J3 autosave response matching | 14.3, 19.5 | The edit journey previously accepted the first workflow PATCH response, which could belong to editor hydration. Require the user's unique marker in both the submitted graph and successful response. | The owner API read and owner editor must still show the same marker; all eight journeys, real requests, and zero retries remain required. |
 | Assistant MCP runner and component-update session fixtures | 14.1-14.2, 15.3 | Existing untyped `AsyncMock` sessions incorrectly model SQLAlchemy's synchronous `get_bind()` as async. Declare their PostgreSQL dialect when the shared flow guard inspects the engine. | Locked-flow cases must still refresh under `FOR UPDATE`, reject the write and skip persistence; the assistant commits only the pre-run transaction release. Native SQLite/PostgreSQL HTTP acceptance covers actual database locking. |
 | Existing auto-login-off user CRUD browser journey | 15.2, TEAM-21 | A newly created user owns a default project, so implicit cascade deletion must return `409 RESOURCE_OWNERSHIP_REQUIRES_DISPOSITION`. Explicitly dispose of that test-owned project and the default variables created on login through the owner's authenticated API before asserting successful admin account deletion. | Retain successful creation, deletion, recreation, rename, login and cross-user flow isolation. Assert the ownership rejection before cleanup; do not ignore failed cleanup requests. |
