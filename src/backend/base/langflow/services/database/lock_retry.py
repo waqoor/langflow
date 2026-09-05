@@ -8,8 +8,12 @@ resolve a stale snapshot. ``busy_timeout`` therefore has no effect on this
 class of failure — the only valid recovery is to end the transaction and run it
 again against a fresh snapshot, which is what :func:`run_with_lock_retry` does.
 
-PostgreSQL deployments never take this path: the predicate below only matches
-SQLite lock errors, so the retry is inert elsewhere.
+PostgreSQL deployments do not retry database exceptions here: the database
+predicate below only matches SQLite lock errors.  Callers may also raise
+``RetryableTransactionError`` after a preliminary identifier set changes while
+they acquire the repository's documented cross-entity lock order.  That
+explicit signal is safe to replay on every supported database because the
+failed attempt is rolled back before the next canonical read.
 """
 
 from __future__ import annotations
@@ -46,6 +50,10 @@ _SQLITE_LOCK_ERROR_NAMES = frozenset(
     }
 )
 _SQLITE_LOCK_MESSAGES = ("database is locked", "database table is locked")
+
+
+class RetryableTransactionError(Exception):
+    """Mark a transaction whose canonical lock set changed during acquisition."""
 
 
 def is_database_lock_error(exc: BaseException | None) -> bool:
@@ -100,7 +108,8 @@ async def run_with_lock_retry(
         try:
             return await operation(attempt)
         except Exception as exc:
-            if attempt == last_attempt or not is_database_lock_error(exc):
+            retryable = isinstance(exc, RetryableTransactionError) or is_database_lock_error(exc)
+            if attempt == last_attempt or not retryable:
                 raise
             # The snapshot is stale: roll the transaction back so the retry
             # reads current data instead of failing on the same conflict.
@@ -109,7 +118,7 @@ async def run_with_lock_retry(
             # Jitter keeps concurrent losers from colliding again in lockstep.
             await asyncio.sleep(delay * (0.5 + random.random()))  # noqa: S311
             await logger.adebug(
-                "Database lock contention on %s, retrying (attempt %s/%s)", description, attempt + 2, attempts
+                "Transaction contention on %s, retrying (attempt %s/%s)", description, attempt + 2, attempts
             )
     msg = "unreachable: the retry loop either returns or raises"
     raise AssertionError(msg)

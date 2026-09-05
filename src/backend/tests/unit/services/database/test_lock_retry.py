@@ -4,6 +4,7 @@ import sqlite3
 
 import pytest
 from langflow.services.database.lock_retry import (
+    RetryableTransactionError,
     is_database_lock_error,
     run_with_lock_retry,
     sanitize_database_error,
@@ -82,6 +83,23 @@ async def test_should_retry_until_the_operation_succeeds():
     assert result == "deleted"
     assert seen == [0, 1, 2]
     assert session.rollbacks == 2, "each retry must start from a rolled-back transaction"
+
+
+async def test_should_retry_an_explicit_stale_lock_set_on_any_database():
+    session = RecordingSession()
+    seen: list[int] = []
+
+    async def operation(attempt: int) -> str:
+        seen.append(attempt)
+        if attempt == 0:
+            raise RetryableTransactionError
+        return "locked"
+
+    result = await run_with_lock_retry(operation, session=session, description="test", base_delay=0.001)
+
+    assert result == "locked"
+    assert seen == [0, 1]
+    assert session.rollbacks == 1
 
 
 async def test_should_reraise_the_last_error_when_attempts_are_exhausted():

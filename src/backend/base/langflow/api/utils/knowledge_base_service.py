@@ -216,12 +216,12 @@ async def list_owned_or_visible(
     visibility: ResourceVisibilityScope,
 ) -> list[KnowledgeBaseRecord]:
     """Return KB rows owned by ``user_id`` or visible through a supported scope."""
-    from langflow.services.authorization.listing import restrict_to_owned_or_visible_scope
+    from langflow.services.authorization.listing import apply_owned_or_visible_scope_prefilter
 
     async with session_scope() as session:
         # KnowledgeBaseRecord has no canonical workspace/project columns, so
         # domain-only grants intentionally remain owner-scoped.
-        stmt = restrict_to_owned_or_visible_scope(
+        stmt = await apply_owned_or_visible_scope_prefilter(
             select(KnowledgeBaseRecord),
             id_column=KnowledgeBaseRecord.id,
             owner_clause=KnowledgeBaseRecord.user_id == user_id,

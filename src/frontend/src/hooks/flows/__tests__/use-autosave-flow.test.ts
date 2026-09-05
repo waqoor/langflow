@@ -409,6 +409,32 @@ describe("useAutoSaveFlow", () => {
     expect(mockSaveFlow).not.toHaveBeenCalled();
   });
 
+  it("does not automatically replay a stale save until the revision changes", async () => {
+    (useFlowsManagerStore as unknown as jest.Mock).mockImplementation(
+      (selector) =>
+        selector({
+          autoSaving: true,
+          autoSavingInterval: 3000,
+          currentFlowId: "flow-1",
+          currentFlow: { edit_revision: 3 },
+        }),
+    );
+    const staleError = {
+      response: {
+        status: 412,
+        data: { detail: { code: "RESOURCE_CHANGED" } },
+      },
+    };
+    mockSaveFlow.mockRejectedValueOnce(staleError);
+    const flow = { ...makeMockFlow(), edit_revision: 3 };
+    const { result } = renderHook(() => useAutoSaveFlow());
+
+    await expect(result.current(flow)).rejects.toBe(staleError);
+    expect(result.current(flow)).toBeUndefined();
+
+    expect(mockSaveFlow).toHaveBeenCalledTimes(1);
+  });
+
   it("does not autosave a flow holding a component the server will reject", async () => {
     // A missing template cannot be persisted, so retrying the save only
     // produces failed requests before the user has touched anything.

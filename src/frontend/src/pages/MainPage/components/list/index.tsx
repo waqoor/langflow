@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePermissions } from "@/contexts/permissionsContext";
+import ResourceShareDialog from "@/customization/components/resource-share-dialog";
 import { useCustomNavigate } from "@/customization/hooks/use-custom-navigate";
 import useDeleteFlow from "@/hooks/flows/use-delete-flow";
 import DeleteConfirmationModal from "@/modals/deleteConfirmationModal";
@@ -47,6 +48,7 @@ const ListComponent = ({
   const { folderId } = useParams();
   const [openSettings, setOpenSettings] = useState(false);
   const [openExportModal, setOpenExportModal] = useState(false);
+  const [openShareDialog, setOpenShareDialog] = useState(false);
   const isComponent = flowData.is_component ?? false;
 
   const { getIcon } = useGetTemplateStyle(flowData);
@@ -78,9 +80,9 @@ const ListComponent = ({
       });
   };
 
-  const { can } = usePermissions();
-  // Moving a flow into another folder mutates its folder_id → gate on write.
-  const canMove = can(flowData.id, "write");
+  const { capability } = usePermissions();
+  // Moving a flow is intentionally narrower than ordinary graph editing.
+  const canMove = capability(flowData.id, "can_move");
 
   const { onDragStart } = useDragStart(flowData);
 
@@ -195,6 +197,13 @@ const ListComponent = ({
                 >
                   {flowData.name}
                 </span>
+                {flowData.is_owner === false && flowData.owner_username && (
+                  <span className="ml-2 shrink-0 text-xs font-normal text-muted-foreground">
+                    {t("sharedWithMe.owner", {
+                      owner: flowData.owner_username,
+                    })}
+                  </span>
+                )}
               </div>
               <div className="flex min-w-0 flex-shrink text-xs text-muted-foreground">
                 <span className="truncate">
@@ -236,11 +245,21 @@ const ListComponent = ({
                 handleEdit={() => {
                   setOpenSettings(true);
                 }}
+                handleShare={() => setOpenShareDialog(true)}
               />
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
       </Card>
+      {openShareDialog && (
+        <ResourceShareDialog
+          open
+          onOpenChange={setOpenShareDialog}
+          resourceType="flow"
+          resourceId={flowData.id}
+          resourceName={flowData.name}
+        />
+      )}
       {openDelete && (
         <DeleteConfirmationModal
           open={openDelete}

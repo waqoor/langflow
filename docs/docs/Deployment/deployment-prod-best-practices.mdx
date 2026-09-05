@@ -120,6 +120,20 @@ Follow industry best practices and use secure Langflow configurations, such as t
 * **Encryption and privacy**: Follow industry best practices and legal requirements for data privacy and encryption of data in transit and at rest, including GDPR requirements, HTTPS, TLS, and SSL. For example, configure PostgreSQL with valid SSL certificates and append `?sslmode=require` or `?sslmode=verify-full` to the connection string to enable SSL for database connections.
 * **Security posture maintenance**: Conduct regular security audits, keep current with software updates, and monitor for suspicious activity using intrusion detection systems.
 
+### Enable native team and resource authorization
+
+For a multi-user deployment, keep authentication and authorization explicit:
+
+1. Take and test a PostgreSQL backup, record the current Alembic revision, and apply the candidate migrations.
+2. Stop application writes and run `langflow authz teams-check`. Resolve every legacy empty/adminless team with an explicit `langflow authz teams-repair --mapping-file <path>` decision; the command never guesses an administrator.
+3. Configure `LANGFLOW_AUTO_LOGIN=false`, secure bootstrap credentials and `LANGFLOW_SECRET_KEY` through your secrets manager, and expose Langflow only through HTTPS.
+4. Set `LANGFLOW_AUTHZ_ENABLED=true`. Set `LANGFLOW_AUTHZ_AUDIT_ENABLED=true` and `LANGFLOW_AUTHZ_AUDIT_DURABLE=true` when authorization records are a compliance requirement. Size and monitor the shared database for the selected retention period.
+5. Start the application and verify the startup log identifies the intended authorization service with enforcement, readiness, team roles, and sharing enabled. As an authenticated user, require `GET /api/v1/authz/capabilities` to report the same ready state before onboarding collaborators.
+
+The native evaluator reads committed policy rows on every new admission, so Redis is not required for revocation correctness. It does not make Langflow a hostile-code tenant sandbox: keep the network, process, storage, custom-component, and secret-isolation controls in this guide. Sharing a flow also does not share the owner's provider credentials or dependencies.
+
+Do not put test suites or repair commands in application startup, migrations, container entrypoints, or deployment commands. If validation fails after upgrade, restore the tested backup with the matching pre-upgrade application version. A schema downgrade can discard collaboration metadata and is not a lossless recovery path. See [Authorization](../Develop/authorization.mdx#revocation-and-operational-recovery) for the policy and restore boundaries.
+
 ## Production preflight checks {#production-preflight}
 
 To verify production infrastructure before any workers start, set the `LANGFLOW_DEPLOYMENT_PROFILE` environment variable to `prod`.
@@ -185,7 +199,7 @@ If this plane does not serve MCP, set `LANGFLOW_MCP_SERVER_ENABLED=false`. Other
 ### Local Chroma in `prod`
 
 The `prod` profile blocks new knowledge bases and memory bases that use local Chroma.
-For local storage, use a shared pgVector, OpenSearch, or Chroma Cloud store, or run Langflow with `LANGFLOW_DEPLOYMENT_PROFILE=dev` 
+For local storage, use a shared pgVector, OpenSearch, or Chroma Cloud store, or run Langflow with `LANGFLOW_DEPLOYMENT_PROFILE=dev`
 
 ## See also
 

@@ -11,6 +11,7 @@ const mockQueryClient = {
 
 interface PatchPayload {
   id: string;
+  edit_revision: number;
   folder_id?: string | null;
   name?: string;
   providerScopeChanged?: boolean;
@@ -83,8 +84,15 @@ describe("usePatchUpdateFlow", () => {
     // Act — simulate the drag-drop PATCH request.
     await mutation.mutate({
       id: "flow-1",
+      edit_revision: 7,
       folder_id: "folder-B",
     });
+
+    expect(mockApiPatch).toHaveBeenCalledWith(
+      "/api/v1/flows/flow-1",
+      { folder_id: "folder-B" },
+      { headers: { "If-Match": '"flow:flow-1:7"' } },
+    );
 
     // Assert — the global flows cache (useGetRefreshFlowsQuery) that
     // HomePage's `isEmptyFolder` check depends on must be invalidated
@@ -114,6 +122,7 @@ describe("usePatchUpdateFlow", () => {
     // Act
     await mutation.mutate({
       id: "flow-1",
+      edit_revision: 7,
       folder_id: "folder-B",
     });
 
@@ -144,6 +153,7 @@ describe("usePatchUpdateFlow", () => {
 
     await mutation.mutate({
       id: "flow-1",
+      edit_revision: 7,
       folder_id: "folder-B",
     });
 
@@ -171,6 +181,7 @@ describe("usePatchUpdateFlow", () => {
     // project A data while project B refetches or if that refetch fails.
     await mutation.mutate({
       id: "flow-1",
+      edit_revision: 7,
       folder_id: "folder-B",
       providerScopeChanged: true,
     });
@@ -256,7 +267,11 @@ describe("usePatchUpdateFlow", () => {
     mockApiPatch.mockResolvedValue({ data: { id: "flow-1", name: "Renamed" } });
 
     const mutation = usePatchUpdateFlow();
-    await mutation.mutate({ id: "flow-1", name: "Renamed" });
+    await mutation.mutate({
+      id: "flow-1",
+      edit_revision: 7,
+      name: "Renamed",
+    });
 
     expect(
       mockQueryClient.resetQueries.mock.calls.some(
@@ -278,6 +293,7 @@ describe("usePatchUpdateFlow", () => {
     const mutation = usePatchUpdateFlow();
     await mutation.mutate({
       id: "flow-1",
+      edit_revision: 7,
       folder_id: "folder-A",
       name: "Saved",
     });

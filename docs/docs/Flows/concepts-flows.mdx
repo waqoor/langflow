@@ -92,6 +92,23 @@ To create a project, click <Icon name="Plus" aria-hidden="true"/> **Create new p
 To get back to the **Projects** page after editing a flow, click the project name or Langflow icon in the Langflow header.
 :::
 
+### Share a flow or project with users or teams
+
+This feature is available when your deployment administrator enables the ready native authorization service. Owners with share-management authority can open **Share** from a flow card's **More** menu, from the flow editor's **Share** menu, or from a project's menu in the project sidebar. The action is hidden when the deployment is not ready or your effective capabilities do not allow it.
+
+Search for an existing active user or team, then choose one of two access modes:
+
+* **Can use** lets the recipient read and run the saved flow. For a project, it lets them open the project and read/run directly contained flows.
+* **Can edit** adds content editing. For a project, it also lets the recipient edit project details and create flows directly inside it.
+
+Project access is inherited dynamically by current and future direct children; Langflow doesn't create a separate share for every flow. Sharing one flow does not reveal its private parent project or sibling flows. Open **Shared with me** to find resources shared directly or through an active team.
+
+Sharing delegates access, not ownership or credentials. A collaborator-created flow remains owned by its creator even if their team membership is later removed. A Can edit recipient cannot reshare, delete, move, transfer, publish, or change transport authentication for someone else's resource. Removing one grant can also leave access through ownership, a role, another team, or project inheritance.
+
+Runs use the authenticated recipient as the execution principal. The owner’s variables, files, provider credentials, nested flows, and other dependencies are not borrowed automatically; the recipient needs their own dependency or a separate authorized share. Revocation blocks new admissions and rechecked resumes, but it doesn't cancel work that was already admitted.
+
+When another editor saves first, Langflow reports a stale-change conflict instead of overwriting their work. Refetch the current flow or project and reconcile your changes; stale saves and share updates aren't retried automatically.
+
 ### Edit flow details
 
 1. On the **Projects** page, locate the flow you want to edit.

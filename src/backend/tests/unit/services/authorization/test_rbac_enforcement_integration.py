@@ -1,10 +1,9 @@
-"""End-to-end RBAC enforcement tests driven by an in-test allow/deny enforcer.
+"""HTTP coverage for production authorization and isolated plugin route guards.
 
-The OSS authorization service is a pass-through (``enforce()`` always allows and
-``supports_cross_user_fetch()`` is False), so allow/deny semantics cannot be
-asserted against it directly. These tests install :class:`PolicyTestAuthorizationService`
-(see ``_policy_double``) with ``AUTHZ_ENABLED=True`` / ``AUTHZ_SUPERUSER_BYPASS=False``
-and exercise the *real* flow routes over HTTP, validating that:
+Native-service cases use real identities, committed grants, and database writes.
+The compatibility cases retain :class:`PolicyTestAuthorizationService`
+(see ``_policy_double``) as an interface-isolation fixture and exercise the
+*real* flow routes over HTTP, validating that:
 
 * the per-route guards (``ensure_flow_permission`` via the ``Authorized*Flow``
   dependencies) actually gate read/write/delete/create/execute by role,
@@ -19,11 +18,16 @@ Everything runs against the OSS package only — no EE Casbin enforcer required.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
+import pytest
 from langflow.api.v1.knowledge_bases import KBStorageHelper
+from langflow.services.auth.mcp_encryption import encrypt_auth_settings
+from langflow.services.authorization.service import LangflowAuthorizationService
+from langflow.services.database.models.auth import AuthzTeam
 from langflow.services.database.models.flow.model import Flow
 from langflow.services.database.models.folder.model import Folder
 from langflow.services.database.models.user.model import User
@@ -42,6 +46,17 @@ from ._policy_double import (
 )
 
 _PASSWORD = "testpassword"  # noqa: S105 — test-only credential  # pragma: allowlist secret
+
+
+@pytest.fixture
+def native_authorization(client, monkeypatch):  # noqa: ARG001 - initialize the real application before enabling authz
+    """Use the application's registered production service, never the policy double."""
+    service = get_authorization_service()
+    assert type(service) is LangflowAuthorizationService
+    monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_ENABLED", True)
+    monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_AUDIT_ENABLED", True)
+    monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_AUDIT_DURABLE", True)
+    return service
 
 
 async def _make_user(username: str) -> UUID:
@@ -63,9 +78,18 @@ async def _login(client, username: str) -> dict[str, str]:
 
 
 async def _make_flow(owner_id: UUID, name: str, *, workspace_id: UUID | None = None) -> UUID:
-    """Insert a minimal flow owned by ``owner_id`` and return its id."""
+    """Insert a valid project-backed flow owned by ``owner_id`` and return its id."""
     async with session_scope() as session:
-        flow = Flow(name=name, user_id=owner_id, workspace_id=workspace_id, data={"nodes": [], "edges": []})
+        project = Folder(name=f"{name}_project", user_id=owner_id, workspace_id=workspace_id)
+        session.add(project)
+        await session.flush()
+        flow = Flow(
+            name=name,
+            user_id=owner_id,
+            folder_id=project.id,
+            workspace_id=project.workspace_id,
+            data={"nodes": [], "edges": []},
+        )
         session.add(flow)
         await session.flush()
         flow_id = flow.id
@@ -201,7 +225,8 @@ async def test_admin_has_full_flow_access(client):
         )
         assert create.status_code == 201, create.text
         # delete -> allowed (admin has flow:delete)
-        assert (await client.delete(f"api/v1/flows/{flow_id}", headers=headers)).status_code == 200
+        delete = await client.delete(f"api/v1/flows/{flow_id}", headers=headers)
+        assert delete.status_code == 200, delete.text
         # the flow is gone -> now 404 for everyone (sanity)
         assert (await client.get(f"api/v1/flows/{flow_id}", headers=headers)).status_code == 404
 
@@ -360,19 +385,19 @@ async def test_project_scoped_developer_can_create_flow_in_foreign_project(clien
     assert upload.json()[0]["workspace_id"] == str(workspace_id)
 
 
-async def test_oss_create_flow_keeps_foreign_project_owner_scoped(client):
-    """The OSS service must not widen a foreign project merely because authz is enabled."""
+async def test_disabled_native_authz_rejects_explicit_foreign_project(client):
+    """Disabled enforcement never redirects an explicit foreign destination."""
     project_owner_id = await _make_user(f"project_owner_{uuid4().hex}")
     foreign_project_id = await _make_project(project_owner_id, f"foreign_project_{uuid4().hex}")
     creator_username = f"creator_{uuid4().hex}"
-    creator_id = await _make_user(creator_username)
+    await _make_user(creator_username)
     headers = await _login(client, creator_username)
 
     settings = get_settings_service()
     authz = get_authorization_service()
-    assert await authz.supports_cross_user_fetch() is False
+    assert await authz.supports_cross_user_fetch() is True
     saved_authz_enabled = settings.auth_settings.AUTHZ_ENABLED
-    settings.auth_settings.AUTHZ_ENABLED = True
+    settings.auth_settings.AUTHZ_ENABLED = False
     try:
         response = await client.post(
             "api/v1/flows/",
@@ -386,17 +411,12 @@ async def test_oss_create_flow_keeps_foreign_project_owner_scoped(client):
     finally:
         settings.auth_settings.AUTHZ_ENABLED = saved_authz_enabled
 
-    assert response.status_code == 201, response.text
-    created = response.json()
-    assert created["folder_id"] != str(foreign_project_id)
-    async with session_scope() as session:
-        destination = await session.get(Folder, UUID(created["folder_id"]))
-    assert destination is not None
-    assert destination.user_id == creator_id
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "Folder not found"
 
 
-async def test_cross_user_destination_resolution_does_not_widen_flow_moves(client):
-    """Cross-user destination fetch is limited to CREATE and cannot bypass move authorization."""
+async def test_cross_user_destination_resolution_requires_create_permission_for_move(client):
+    """Resolving a foreign destination cannot bypass destination authorization."""
     project_owner_id = await _make_user(f"move_project_owner_{uuid4().hex}")
     foreign_project_id = await _make_project(project_owner_id, f"move_target_{uuid4().hex}")
     creator_username = f"move_creator_{uuid4().hex}"
@@ -418,9 +438,12 @@ async def test_cross_user_destination_resolution_does_not_widen_flow_moves(clien
             json={"folder_id": str(foreign_project_id)},
         )
 
-    assert move.status_code == 200, move.text
-    assert move.json()["folder_id"] == original_folder_id
-    assert move.json()["folder_id"] != str(foreign_project_id)
+    assert move.status_code == 404, move.text
+    assert move.json()["detail"] == "Flow not found"
+    async with session_scope() as session:
+        unchanged = await session.get(Flow, UUID(create.json()["id"]))
+    assert unchanged is not None
+    assert str(unchanged.folder_id) == original_folder_id
 
 
 # --------------------------------------------------------------------------- #
@@ -435,15 +458,27 @@ async def test_domain_scoped_role_applies_only_in_matching_domain(client):
     workspace_b = uuid4()
     flow_a = await _make_flow(owner_id, f"a_{uuid4().hex}", workspace_id=workspace_a)
     flow_b = await _make_flow(owner_id, f"b_{uuid4().hex}", workspace_id=workspace_b)
-    # viewer scoped to workspace A only.
-    _viewer_id, headers = await _role_user(client, "viewer", role_ids, domain_type="workspace", domain_id=workspace_a)
+    async with session_scope() as session:
+        flow_a_row = await session.get(Flow, flow_a)
+        flow_b_row = await session.get(Flow, flow_b)
+    assert flow_a_row is not None
+    assert flow_a_row.folder_id is not None
+    assert flow_b_row is not None
+    assert flow_b_row.folder_id is not None
+    # The project domain is the most specific canonical scope for a
+    # project-backed flow. A viewer grant on project A must not bleed into B.
+    _viewer_id, headers = await _role_user(
+        client,
+        "viewer",
+        role_ids,
+        domain_type="project",
+        domain_id=flow_a_row.folder_id,
+    )
 
     with install_policy_authz(get_settings_service()):
-        # flow A resolves to domain workspace:{A} -> grant covers -> read allowed.
+        # flow A resolves to project A -> grant covers -> read allowed.
         assert (await client.get(f"api/v1/flows/{flow_a}", headers=headers)).status_code == 200
-        # flow B resolves to workspace:{B} -> grant does NOT cover -> denied -> 404.
-        # (If domain resolution regressed to '*', the workspace-A grant would stop
-        # matching flow A and the assertion above would fail instead.)
+        # flow B resolves to project B -> the project-A grant does not cover it.
         assert (await client.get(f"api/v1/flows/{flow_b}", headers=headers)).status_code == 404
 
 
@@ -545,3 +580,217 @@ async def test_developer_can_create_files_and_knowledge_bases(client, monkeypatc
             files={"files": ("developer.txt", b"allowed", "text/plain")},
         )
         assert preview.status_code == 200, preview.text
+
+
+@pytest.mark.parametrize("resource_type", ["flow", "project"])
+@pytest.mark.parametrize("method", ["PATCH", "PUT"])
+@pytest.mark.parametrize("no_op", [False, True])
+async def test_native_collaborator_save_response_keeps_owner_credentials_private(
+    client, native_authorization, resource_type, method, no_op
+):
+    assert await native_authorization.is_enabled()
+    owner_name, editor_name = f"owner_{uuid4().hex}", f"editor_{uuid4().hex}"
+    owner_id, editor_id = await _make_user(owner_name), await _make_user(editor_name)
+    owner_headers, editor_headers = await _login(client, owner_name), await _login(client, editor_name)
+    secret = "synthetic-owner-credential-for-redaction"  # noqa: S105  # pragma: allowlist secret
+    if resource_type == "flow":
+        resource_id = await _make_flow(owner_id, f"SecretFlow_{uuid4().hex}")
+        async with session_scope() as session:
+            row = await session.get(Flow, resource_id)
+            row.data = {
+                "nodes": [
+                    {
+                        "id": "TextInput-secret",
+                        "data": {
+                            "type": "TextInput",
+                            "node": {
+                                "template": {"input_value": {"name": "input_value", "password": True, "value": secret}},
+                            },
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+            await session.commit()
+        path = f"api/v1/flows/{resource_id}"
+    else:
+        resource_id = await _make_project(owner_id, f"SecretProject_{uuid4().hex}")
+        async with session_scope() as session:
+            row = await session.get(Folder, resource_id)
+            row.auth_settings = encrypt_auth_settings({"auth_type": "apikey", "api_key": secret})
+            await session.commit()
+        path = f"api/v1/projects/{resource_id}"
+
+    grant = await client.post(
+        "api/v1/authz/shares",
+        headers=owner_headers,
+        json={
+            "resource_type": resource_type,
+            "resource_id": str(resource_id),
+            "scope": "user",
+            "target_id": str(editor_id),
+            "permission_level": "write",
+        },
+    )
+    assert grant.status_code == 201, grant.text
+    observed = await client.get(path, headers=editor_headers)
+    assert observed.status_code == 200, observed.text
+    assert secret not in observed.text
+    original = observed.json()
+    payload = {"name": original["name"]}
+    if not no_op:
+        payload["description"] = "A collaborator's content edit"
+    saved = await client.request(
+        method, path, headers={**editor_headers, "If-Match": observed.headers["etag"]}, json=payload
+    )
+    assert saved.status_code == 200, saved.text
+    assert secret not in saved.text
+    if resource_type == "project":
+        assert saved.json()["auth_settings"] is None
+    assert saved.json()["edit_revision"] == original["edit_revision"] + (0 if no_op else 1)
+    owner_read = await client.get(path, headers=owner_headers)
+    assert owner_read.status_code == 200, owner_read.text
+    if resource_type == "flow":
+        assert secret in owner_read.text
+    else:
+        assert owner_read.json()["auth_settings"] is not None
+
+
+@pytest.mark.parametrize("resource_type", ["flow", "project"])
+async def test_native_unready_service_rejects_owner_writes_and_permission_discovery(
+    client, native_authorization, resource_type
+):
+    username = f"unready_owner_{uuid4().hex}"
+    owner_id = await _make_user(username)
+    headers = await _login(client, username)
+    resource_id = await (
+        _make_flow(owner_id, "Unready flow") if resource_type == "flow" else _make_project(owner_id, "Unready project")
+    )
+    path = f"api/v1/{'flows' if resource_type == 'flow' else 'projects'}/{resource_id}"
+    observed = await client.get(path, headers=headers)
+    assert observed.status_code == 200
+    # Actual invalid canonical data makes the production readiness probe fail.
+    async with session_scope() as session:
+        session.add(AuthzTeam(team_name="Unrepaired legacy team", adom_name=uuid4().hex))
+        await session.commit()
+    assert await native_authorization.collaboration_ready() is False
+    for write_headers in (headers, {**headers, "If-Match": observed.headers["etag"]}):
+        saved = await client.patch(path, headers=write_headers, json={"description": "Must not persist"})
+        assert saved.status_code == 503, saved.text
+        assert saved.json()["detail"]["code"] == "AUTHORIZATION_NOT_READY"
+    permissions = await client.post(
+        "api/v1/authz/me/permissions",
+        headers=headers,
+        json={
+            "resource_type": resource_type,
+            "resource_ids": [str(resource_id)],
+        },
+    )
+    assert permissions.status_code == 503, permissions.text
+    async with session_scope() as session:
+        stored = await session.get(Flow if resource_type == "flow" else Folder, resource_id)
+        assert stored.description != "Must not persist"
+        assert stored.edit_revision == observed.json()["edit_revision"]
+
+
+@pytest.mark.parametrize("resource_type", ["flow", "project"])
+async def test_native_effective_permissions_never_invents_owner_actions(client, native_authorization, resource_type):
+    assert await native_authorization.is_enabled()
+    username = f"action_owner_{uuid4().hex}"
+    owner_id = await _make_user(username)
+    headers = await _login(client, username)
+    resource_id = await (
+        _make_flow(owner_id, "Action flow") if resource_type == "flow" else _make_project(owner_id, "Action project")
+    )
+    response = await client.post(
+        "api/v1/authz/me/permissions",
+        headers=headers,
+        json={
+            "resource_type": resource_type,
+            "resource_ids": [str(resource_id)],
+            "actions": ["read", "unknown", "execute"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    allowed = response.json()["permissions"][str(resource_id)]
+    assert "read" in allowed
+    assert "unknown" not in allowed
+    assert ("execute" in allowed) is (resource_type == "flow")
+
+
+@pytest.mark.parametrize("resource_type", ["flow", "project"])
+@pytest.mark.parametrize("audit_enabled", [False, True])
+async def test_native_concurrent_writes_accept_exactly_one_observed_revision(
+    client, native_authorization, monkeypatch, resource_type, audit_enabled
+):
+    assert await native_authorization.is_enabled()
+    monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_AUDIT_ENABLED", audit_enabled)
+    username = f"concurrent_owner_{uuid4().hex}"
+    owner_id = await _make_user(username)
+    headers = await _login(client, username)
+    resource_id = await (
+        _make_flow(owner_id, "Concurrent flow")
+        if resource_type == "flow"
+        else _make_project(owner_id, "Concurrent project")
+    )
+    path = f"api/v1/{'flows' if resource_type == 'flow' else 'projects'}/{resource_id}"
+    observed = await client.get(path, headers=headers)
+    assert observed.status_code == 200
+    write_headers = {**headers, "If-Match": observed.headers["etag"]}
+    outcomes = await asyncio.gather(
+        *(
+            client.patch(path, headers=write_headers, json={"description": description})
+            for description in ("First edit", "Second edit")
+        )
+    )
+    assert sorted(response.status_code for response in outcomes) == [200, 412], [response.text for response in outcomes]
+    winner = next(response.json() for response in outcomes if response.status_code == 200)
+    persisted = await client.get(path, headers=headers)
+    assert persisted.status_code == 200
+    assert persisted.json()["description"] == winner["description"]
+    assert persisted.json()["edit_revision"] == observed.json()["edit_revision"] + 1
+
+
+@pytest.mark.parametrize("resource_type", ["flow", "bulk_flow", "project"])
+@pytest.mark.parametrize("audit_enabled", [False, True])
+async def test_native_delete_cannot_remove_a_concurrently_updated_revision(
+    client, native_authorization, monkeypatch, resource_type, audit_enabled
+):
+    assert await native_authorization.is_enabled()
+    monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_AUDIT_ENABLED", audit_enabled)
+    username = f"delete_race_owner_{uuid4().hex}"
+    owner_id = await _make_user(username)
+    headers = await _login(client, username)
+    is_project = resource_type == "project"
+    resource_id = await (
+        _make_project(owner_id, "Delete race project") if is_project else _make_flow(owner_id, "Delete race flow")
+    )
+    path = f"api/v1/{'projects' if is_project else 'flows'}/{resource_id}"
+    observed = await client.get(path, headers=headers)
+    assert observed.status_code == 200, observed.text
+    write_headers = {**headers, "If-Match": observed.headers["etag"]}
+    if resource_type == "bulk_flow":
+        delete = client.request(
+            "DELETE",
+            "api/v1/flows/",
+            headers=headers,
+            json={
+                "flow_ids": [str(resource_id)],
+                "expected_edit_revision": {str(resource_id): observed.json()["edit_revision"]},
+            },
+        )
+    else:
+        delete = client.delete(path, headers=write_headers)
+    saved, deleted = await asyncio.gather(
+        client.patch(path, headers=write_headers, json={"description": "Concurrent edit must survive stale deletion"}),
+        delete,
+    )
+    if saved.status_code == 200:
+        assert deleted.status_code == 412, deleted.text
+        persisted = await client.get(path, headers=headers)
+        assert persisted.status_code == 200, persisted.text
+        assert persisted.json()["description"] == saved.json()["description"]
+    else:
+        assert saved.status_code == 404, saved.text
+        assert deleted.status_code in {200, 204}, deleted.text
+        assert (await client.get(path, headers=headers)).status_code == 404

@@ -244,6 +244,16 @@ LANGFLOW_EXTERNAL_AUTH_ACCESS_CLAIM_MAPPING='{"read_access":"viewer","write_acce
 LANGFLOW_EXTERNAL_AUTH_ACCESS_CLAIM_MAPPING="read_access:viewer,write_access:editor,superadmin:admin"
 ```
 
+## External identity with teams and resource sharing
+
+External authentication and authorization remain separate. A verified bearer token identifies or JIT-provisions the local user; it does not make that user a Langflow Platform Admin, Team Admin, or resource owner. In particular, an IdP group named `admin` is never interpreted as a Langflow Team Admin role.
+
+The access ceiling is deny-only and is applied before native resource grants. A `viewer` ceiling cannot be widened by a Team Admin role or editable share. An `editor` ceiling still excludes Platform Admin and deploy-only authority. Only an external `admin` ceiling can preserve an already configured local Platform Admin bypass; it does not create that local authority.
+
+An authorization-service integration may opt into one normalized external group claim and reconcile source-managed memberships after authentication has verified the token. Source-managed membership retains its provenance and cannot be removed through the manual team endpoint. An authoritative removal ends both membership and its local team role; later re-entry does not resurrect an earlier role automatically. The integration must treat missing, malformed, truncated, or excessive group claims as incomplete rather than as an authoritative empty roster unless it explicitly supports that fail-closed contract.
+
+Full Langflow's native service does not automatically map provider-specific group claims to `AuthzTeam.adom_name`; without an authorization-service integration that implements directory snapshot ingestion, manage memberships locally. Keycloak is the worked authentication example on this page, but no IdP's team-sync behavior is certified merely by documenting its token format. Validate the exact provider, claim path, removal behavior, and ceiling mapping in a non-production environment before relying on source-managed memberships.
+
 ## Use a custom identity resolver
 
 By default, Langflow validates the credential as a JWT and maps the resulting claims to a local identity.

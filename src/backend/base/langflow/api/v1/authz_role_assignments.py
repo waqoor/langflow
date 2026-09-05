@@ -35,6 +35,7 @@ from langflow.services.authorization.lifecycle import (
     stage_identity_mutation,
     validate_identity_mutation,
 )
+from langflow.services.authorization.team_management import actor_can_administer_platform
 from langflow.services.authorization.utils import audit_decision
 from langflow.services.database.models.auth import AuthzRole, AuthzRoleAssignment, AuthzRoleAssignmentGrant
 from langflow.services.database.models.user.model import User
@@ -58,7 +59,7 @@ async def _audit_deny(*, user_id: UUID, action: str, obj: str, status_code: int,
 
 
 async def _require_superuser(user, *, action: str, obj: str) -> None:
-    if not getattr(user, "is_superuser", False):
+    if not actor_can_administer_platform(user):
         await _audit_deny(
             user_id=user.id,
             action=action,

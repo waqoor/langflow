@@ -542,6 +542,39 @@ def stage_audit_decision(
     return True
 
 
+def stage_mutation_audit(
+    *,
+    session: AsyncSession,
+    user_id: UUID | None,
+    action: str,
+    obj: str,
+    details: dict[str, Any] | None = None,
+    principal: AuthorizationPrincipal | None = None,
+) -> UUID:
+    """Stage a required mutation record in the caller's transaction.
+
+    Unlike advisory decision auditing, collaboration mutations must retain a
+    durable explanation even when the optional high-volume decision audit
+    stream is disabled. A failure to stage or flush this row therefore aborts
+    the canonical mutation instead of being deferred post-commit.
+    """
+    resolved_user_id, actor_type, actor_id = _resolve_actor(user_id, principal)
+    entry = _AuditEntry(
+        user_id=resolved_user_id,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        action=action,
+        obj=obj,
+        result=AUDIT_ALLOW,
+        details=_merge_audit_details(
+            {**(details or {}), "event": AUDIT_EVENT_MUTATION},
+            include_credential=resolved_user_id is not None,
+        ),
+    )
+    _stage_audit_entries(session, [entry])
+    return entry.event_id
+
+
 async def drain_pending_audit_writes(timeout: float = 5.0) -> None:
     """Flush the audit queue and stop the writer (bounded by ``timeout``).
 

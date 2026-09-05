@@ -279,14 +279,20 @@ class AuthSettings(BaseSettings):
         ),
     )
 
-    # Authorization (RBAC) feature flags — enforcement via authorization_service plugin
+    # Authorization (RBAC) feature flags — enforcement via the registered service
     AUTHZ_ENABLED: bool = Field(
         default=False,
-        description="Enable authorization enforcement. Requires an authorization_service plugin.",
+        description=(
+            "Enable authorization enforcement through the registered authorization service. "
+            "The full Langflow application registers its native canonical-table evaluator; "
+            "provider-free LFX retains the interface default."
+        ),
     )
     AUTHZ_SUPERUSER_BYPASS: bool = Field(
         default=True,
-        description="When True, active superusers bypass authorization checks (audited by the plugin).",
+        description=(
+            "When True, active superusers bypass authorization checks, subject to any narrower credential ceiling."
+        ),
     )
     AUTHZ_AUDIT_ENABLED: bool = Field(
         default=False,
