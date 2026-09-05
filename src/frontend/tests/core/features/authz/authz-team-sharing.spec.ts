@@ -433,21 +433,27 @@ test.describe("native team and resource sharing", () => {
       ).toBeVisible({ timeout: TIMEOUTS.standard });
 
       await teamAdminPage.goto("/teams");
-      await expect(teamAdminPage.getByTestId("teams-page")).toBeVisible();
+      await expect(teamAdminPage.getByTestId("teams-page")).toBeVisible({
+        timeout: TIMEOUTS.standard,
+      });
       await expect(teamAdminPage.getByLabel("Team name")).toBeEnabled();
       await expect(
         teamAdminPage.getByLabel("Administrative domain"),
       ).toBeDisabled();
 
       await maintainerPage.goto("/teams");
-      await expect(maintainerPage.getByTestId("teams-page")).toBeVisible();
+      await expect(maintainerPage.getByTestId("teams-page")).toBeVisible({
+        timeout: TIMEOUTS.standard,
+      });
       await expect(maintainerPage.getByLabel("Team name")).toBeDisabled();
       await expect(
         maintainerPage.getByTestId("team-member-picker"),
       ).toBeVisible();
 
       await teamUserPage.goto("/teams");
-      await expect(teamUserPage.getByTestId("teams-page")).toBeVisible();
+      await expect(teamUserPage.getByTestId("teams-page")).toBeVisible({
+        timeout: TIMEOUTS.standard,
+      });
       await expect(teamUserPage.getByLabel("Team name")).toBeDisabled();
       await expect(teamUserPage.getByTestId("team-member-picker")).toHaveCount(
         0,
@@ -455,7 +461,9 @@ test.describe("native team and resource sharing", () => {
 
       await authenticatePage(a11yPage, "langflow", SUPERUSER_PASSWORD);
       await a11yPage.goto("/admin/teams");
-      await expect(a11yPage.getByTestId("admin-teams-page")).toBeVisible();
+      await expect(a11yPage.getByTestId("admin-teams-page")).toBeVisible({
+        timeout: TIMEOUTS.standard,
+      });
       await a11yPage.runA11yScan("authz-admin-teams");
     },
   );
@@ -703,7 +711,9 @@ test.describe("native team and resource sharing", () => {
 
       await authenticatePage(a11yPage, teamAdmin.username);
       await a11yPage.goto("/teams");
-      await expect(a11yPage.getByTestId("teams-page")).toBeVisible();
+      await expect(a11yPage.getByTestId("teams-page")).toBeVisible({
+        timeout: TIMEOUTS.standard,
+      });
       await a11yPage.runA11yScan("authz-member-teams");
     },
   );

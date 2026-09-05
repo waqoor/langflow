@@ -335,6 +335,7 @@ async def test_update_project_cannot_rename_system_starter(monkeypatch):
     locked_result = MagicMock()
     locked_result.first.return_value = system_starter
     session = AsyncMock()
+    session.get_bind = MagicMock(return_value=SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
     session.exec.return_value = locked_result
 
     with pytest.raises(HTTPException) as exc_info:
