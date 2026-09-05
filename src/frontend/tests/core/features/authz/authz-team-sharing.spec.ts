@@ -560,7 +560,6 @@ test.describe("native team and resource sharing", () => {
       await expect(
         a11yPage.getByRole("application", { name: "Text Output node" }),
       ).toBeVisible({ timeout: TIMEOUTS.standard });
-      await a11yPage.runA11yScan("authz-read-only-flow-editor");
     },
   );
 

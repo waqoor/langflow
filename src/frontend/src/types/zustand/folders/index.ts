@@ -1,7 +1,6 @@
 import type { FolderType } from "../../../pages/MainPage/entities";
 
 export type FoldersStoreType = {
-  loadingById: boolean;
   myCollectionId: string | null | undefined;
   setMyCollectionId: (value: string | undefined) => void;
   folderToEdit: FolderType | null;

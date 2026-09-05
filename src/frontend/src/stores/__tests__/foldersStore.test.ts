@@ -299,7 +299,7 @@ describe("useFolderStore", () => {
         result.current.setFolders([folderWithFlows]);
       });
 
-      expect(result.current.folders[0].flows).toMatchObject([{ id: "flow-1" }]);
+      expect(result.current.folders[0].flows).toEqual(folderWithFlows.flows);
     });
   });
 

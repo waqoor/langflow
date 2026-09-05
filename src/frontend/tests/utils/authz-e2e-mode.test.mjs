@@ -2,29 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   AUTHZ_JOURNEY_IDS,
-  E2E_ARTIFACT_WATCH_IGNORE,
   getE2EArtifactNamespace,
   getE2EDatabaseDirectory,
   getE2ETestIgnore,
   inspectAuthzJourneyTitles,
   isAuthzE2EMode,
 } from "./authz-e2e-mode.mjs";
-
-test("keeps generated Playwright artifacts outside the Vite watcher", () => {
-  for (const artifactPath of [
-    "E:\\repo\\frontend\\test-results-authz\\trace.network",
-    "/repo/frontend/test-results/trace.zip",
-    "/repo/frontend/playwright-report-authz/index.html",
-    "/repo/frontend/blob-report-core/report.zip",
-    "/repo/frontend/coverage/accessibility-reports/report.html",
-  ]) {
-    assert.equal(E2E_ARTIFACT_WATCH_IGNORE.test(artifactPath), true);
-  }
-  assert.equal(
-    E2E_ARTIFACT_WATCH_IGNORE.test("/repo/frontend/src/pages/TeamsPage.tsx"),
-    false,
-  );
-});
 
 test("keeps normal and authorization E2E state isolated", () => {
   assert.equal(isAuthzE2EMode({}), false);

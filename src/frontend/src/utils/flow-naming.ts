@@ -3,7 +3,7 @@ import { addVersionToDuplicates, type NamedFlow } from "@/utils/reactflowUtils";
 
 // Folder scope matches the UI grouping; user scope matches the DB's unique (user_id, name).
 export function getFolderScopedDuplicateName(
-  flow: NamedFlow,
+  flow: FlowType,
   flows: FlowType[],
   folderId?: string | null,
 ): string {

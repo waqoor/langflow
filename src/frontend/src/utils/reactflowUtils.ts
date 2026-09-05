@@ -877,7 +877,7 @@ export function updateEdges(edges: EdgeType[]) {
 
 export type NamedFlow = Pick<FlowType, "id" | "name">;
 
-export function addVersionToDuplicates(flow: NamedFlow, flows: NamedFlow[]) {
+export function addVersionToDuplicates(flow: FlowType, flows: NamedFlow[]) {
   const flowsWithoutUpdatedFlow = flows.filter((f) => f.id !== flow.id);
 
   const existingNames = flowsWithoutUpdatedFlow.map((item) => item.name);

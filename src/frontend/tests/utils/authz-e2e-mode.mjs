@@ -5,12 +5,6 @@ export const AUTHZ_JOURNEY_IDS = Object.freeze(
   ),
 );
 
-// Vite watches the frontend root during Playwright runs. Windows cannot watch
-// Playwright trace files while Chromium has them locked, so generated runner
-// directories must stay outside the dev server's watcher.
-export const E2E_ARTIFACT_WATCH_IGNORE =
-  /(?:^|[\\/])(?:test-results(?:-authz)?|playwright-report(?:-authz)?|blob-report-(?:authz|core)|coverage)(?:[\\/]|$)/;
-
 export function isAuthzE2EMode(env = process.env) {
   return env.LANGFLOW_E2E_AUTHZ === "true";
 }

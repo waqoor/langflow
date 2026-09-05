@@ -3,22 +3,40 @@
 **Canonical repository:** `https://github.com/waqoor/langflow` \
 **Delivery branch:** `feat/auth-team-sharing` \
 **Fork-main base:** `e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5` \
-**Acceptance candidate:** `41d269885bd9c968bf41a0f3274448ac902ecefe` \
-**Candidate tree:** `05c465c1b76a3862fb705367b7aaae7bdc3cc346` \
+**Previous hosted candidate:** `41d269885bd9c968bf41a0f3274448ac902ecefe` \
+**Previous candidate tree:** `05c465c1b76a3862fb705367b7aaae7bdc3cc346` \
 **Migration:** `bf6c22022777`, down revision `c6d8e0f2a4b7`, phase `MIGRATE` \
 **Verification date:** September 5, 2026 \
 **Current production implementation:** `c0a9e4823520c6d5be67086a4234a9c705f1b43d` \
-**Status:** Final integrated CI verification is in progress. The user reaffirmed that this contribution is limited to the plan and regressions caused by the contribution. A general response-before-commit assertion introduced during this continuation exceeds that boundary and is being removed; the pre-existing route transaction behavior is not being changed. Required sharing, revision, lifecycle, migration and concurrency coverage remains intact. This candidate is not accepted.
+**Status:** Scope corrections after `57199b480a` are complete locally and await final integrated verification. Extra acceptance requirements and unrelated cleanup are removed as recorded below. Required sharing, revision, lifecycle, migration and concurrency coverage remains intact. No overall acceptance is claimed from the previous hosted candidate.
 
-## Final candidate validation
+## Previous hosted candidate validation
 
-The full build/test run is [33933277196](https://github.com/waqoor/langflow/actions/runs/33933277196), attempt 1. It uses the exact candidate above, both required Python versions and database engines, the dedicated zero-retry sharing invocation, the existing core regression suites, and ARM64 Docker validation. No release or deployment is enabled.
+The full build/test run [33933277196](https://github.com/waqoor/langflow/actions/runs/33933277196), attempt 1, used the historical candidate above and was cancelled when the scope-correction candidate was dispatched. It is incomplete evidence, not final acceptance. No release or deployment was enabled.
 
 The separate [CI Scripts Tests run 33933278780](https://github.com/waqoor/langflow/actions/runs/33933278780/job/101216133018) on the same candidate passed all 157 tests with four upstream warnings. Native acceptance passed 246 cases on Python 3.10 with both engines and Python 3.14 with SQLite. [Python 3.14 / PostgreSQL](https://github.com/waqoor/langflow/actions/runs/33933277196/job/101216145957) failed the project PUT commit-visibility assertion after 72 passes. Core browser shard 13 separately failed before test execution when `setup-uv` timed out fetching its version manifest. Neither failure is counted as passing acceptance.
 
 ## September 5 continuation
 
 Work continues on `feat/auth-team-sharing` from `b86381ec3b`. The objective authorizes feature-branch delivery and fork build/test validation. The eight pre-existing, unrelated working-tree edits remain user-owned and excluded from feature commits. `main`, the authoritative plan, and production configuration remain unchanged.
+
+### Scope correction requested by the contributor
+
+The user's September 5 correction limits the patch to the plan and defects caused by this contribution. The complete branch inventory was checked against Sections 1, 12-19 and 23. The following extra work is removed rather than retained as general project maintenance:
+
+| Removed work | Scope reason | Required coverage retained |
+|---|---|---|
+| Generic HTTP response-before-commit test added in `c68aa684fd` and its uncommitted creation variants | The fork base already defers these commits to dependency teardown; the plan requires atomic revision checks, not a general response-timing redesign. No proposed transaction cleanup was applied. | Native sharing, missing/stale revisions, concurrent saves/deletes, collaborator redaction, and project inheritance. |
+| Global node/parameter DOM-ID encoding and its added helper/component tests | The existing graph label defect is independent of team/resource sharing. Restore the original components/helper and preserve their original tests. | Functional read-only editor and execution checks, plus existing component accessibility regressions. |
+| Additional whole-editor IBM scan in J2 | The plan requests accessibility checks for this feature's controls; it does not require remediation of the existing graph editor. | All eight functional journeys, and IBM scans for Teams, Shared With Me and the Share dialog. |
+| Global Vite artifact-watcher exclusion and its dedicated test/export | This is a general Windows development-runner workaround. | The plan's isolated authorization database/configuration/report paths and unchanged normal browser selection. |
+| Incidental typing cleanup in existing exception traversal, service imports, role/audit query expressions, flow-naming helpers and folder-store declarations | These edits are independent of the new authorization and revision contracts. | New contract types, enforcement/credential checks and required revision fields remain. |
+
+Restoring the old folder-store fixture's `as any` failed the existing staged no-any hook. Section 23.8 explicitly requires that hook to remain effective, and this file needs the new project revision fields. The fixture therefore keeps a typed flow value, while its original exact-equality assertion is restored instead of the later partial-match assertion. No lint rule or check was weakened.
+
+Focused validation after these removals passed 16/16 backend destination/publication cases (before correction: 6 failed, 10 passed), 63/63 frontend cases in five suites, and 81/81 browser utility cases. The exact folder-store fixture comparison also passed its separate rerun. Applicable repository hooks passed, including both Biome hooks and secret scanning. These are focused results; the final eight-journey and hosted results must be recorded separately.
+
+The CI candidate started immediately before the newly downloaded backend failure log was inspected (`33934265802`, commit `57199b480a`) was cancelled during setup. It is not acceptance evidence. Further validation follows the scoped patch; unrelated upstream failures are recorded without product fixes.
 
 The new regression cases first demonstrated these failures:
 
@@ -275,6 +293,8 @@ The authoritative requirements are in `auth_share_implementation_plan.md`. This 
 | New concurrent HTTP update versus single-flow, bulk-flow or project deletion | 14.1-14.2, 15.3 | Deletion must use the same locked revision contract as updates. | Real concurrent requests verify that a successful edit survives a stale delete, or a successful delete makes the edit return 404, with auditing enabled and disabled. |
 | `test_fetch.py` SQL-shape fixture | 14.1-14.2, 15.3 | Supply the PostgreSQL dialect on the fake session now that the production helper selects the database-specific lock operation. | Existing owner predicates, FOR UPDATE and identity-map refresh assertions remain unchanged; real SQLite/PostgreSQL HTTP tests cover the lock behavior. |
 | Additional generic HTTP response-before-commit assertions, introduced in `c68aa684fd` and extended locally | User's explicit scope correction; plan 14 requires atomic revision checks but does not mandate a generic ASGI response-timing redesign | Remove only this continuation's extra test function and abandon the proposed general transaction cleanup. The fork base already uses `flush()` plus request-dependency commit in these routes/helpers. Record the failed observation as an excluded upstream behavior, not a fixed contribution defect. | No upstream test is removed. All required missing/stale revision, concurrent save/delete, native enforcement, collaborator-response redaction, creation and inheritance cases remain. The required hosted selection returns from 246 to 242 cases. |
+| `test_flows_helpers.py` PATCH publication denials expect individual field names | 12.3 | The contribution's shared-editor guard rejects both publication changes with its canonical ownership/publication message before the older field-specific branches. Update only those message expectations. | Keep both 403 assertions and verify the stored publication flag and card remain unchanged. Existing PUT field-specific assertions stay intact. |
+| `test_flow_folder_integrity.py` explicit missing destinations fall back to a default folder | 12.2, 12.5 | Align create, PATCH, batch and upload expectations with the plan's explicit-destination rejection. Use omitted destinations for successful canonical-default tests; retain rejected import and rejected move cases. | Successful default creation/import still validates ownership and canonical workspace; rejected requests create no flow or preserve the original flow. Existing valid-destination, zero-folder, orphan adoption and PUT rejection cases remain. |
 | J3 autosave response matching | 14.3, 19.5 | The edit journey previously accepted the first workflow PATCH response, which could belong to editor hydration. Require the user's unique marker in both the submitted graph and successful response. | The owner API read and owner editor must still show the same marker; all eight journeys, real requests, and zero retries remain required. |
 | Assistant MCP runner and component-update session fixtures | 14.1-14.2, 15.3 | Existing untyped `AsyncMock` sessions incorrectly model SQLAlchemy's synchronous `get_bind()` as async. Declare their PostgreSQL dialect when the shared flow guard inspects the engine. | Locked-flow cases must still refresh under `FOR UPDATE`, reject the write and skip persistence; the assistant commits only the pre-run transaction release. Native SQLite/PostgreSQL HTTP acceptance covers actual database locking. |
 | Existing auto-login-off user CRUD browser journey | 15.2, TEAM-21 | A newly created user owns a default project, so implicit cascade deletion must return `409 RESOURCE_OWNERSHIP_REQUIRES_DISPOSITION`. Explicitly dispose of that test-owned project and the default variables created on login through the owner's authenticated API before asserting successful admin account deletion. | Retain successful creation, deletion, recreation, rename, login and cross-user flow isolation. Assert the ownership rejection before cleanup; do not ignore failed cleanup requests. |

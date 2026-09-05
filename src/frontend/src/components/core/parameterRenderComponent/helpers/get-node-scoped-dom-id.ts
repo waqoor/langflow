@@ -6,15 +6,10 @@
  * Scoping the DOM id by node makes it unique without touching the base id,
  * which is what `data-testid` is built from and what the e2e suite selects on.
  */
-/** Build a stable DOM id whose segments are safe to use as ARIA ID references. */
-export function getDomId(...segments: string[]): string {
-  return segments.map((segment) => encodeURIComponent(segment)).join("-");
-}
-
 export function getNodeScopedDomId(
   id?: string,
   nodeId?: string,
 ): string | undefined {
   if (!id) return id;
-  return nodeId ? getDomId(id, nodeId) : getDomId(id);
+  return nodeId ? `${id}-${nodeId}` : id;
 }
