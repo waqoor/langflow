@@ -86,6 +86,37 @@ async def permits(service, state):
     return await service.enforce(user_id=state.recipient, domain="*", obj=f"flow:{state.flow}", act="read")
 
 
+@pytest.mark.parametrize("replace", [False, True])
+async def test_unused_superuser_teardown_keeps_policy_coherent(scenario, monkeypatch, replace):
+    """Shutdown and restart publish bootstrap identity deletion with its derived policy."""
+    from langflow.services.deps import get_settings_service
+    from langflow.services.utils import get_or_create_super_user, teardown_superuser
+    from lfx.services.settings.constants import DEFAULT_SUPERUSER
+
+    state = scenario
+    settings = get_settings_service()
+    monkeypatch.setattr(settings.auth_settings, "AUTO_LOGIN", False)
+    async with state.writable() as writer:
+        await store.acquire_writer_lock(writer)
+        user = await writer.get(User, state.recipient)
+        user.username = DEFAULT_SUPERUSER
+        user.is_superuser = True
+        await store.reconcile_policy(writer)
+
+    async with state.writable() as writer:
+        await teardown_superuser(settings, writer)
+        if replace:
+            replacement = await get_or_create_super_user(writer, DEFAULT_SUPERUSER, str(uuid4()), is_default=False)
+            assert replacement.id != state.recipient
+            assert replacement.is_active is True
+            assert replacement.is_superuser is True
+
+    async with state.readonly() as reader:
+        assert await reader.get(User, state.recipient) is None
+        assert (await store.verify_projection(reader))["valid"] is True
+    assert await permits(state.services[1], state) is False
+
+
 @pytest.mark.parametrize("operation", ["post", "put_create", "patch", "put_update"])
 async def test_project_success_is_committed_before_the_http_response(scenario, monkeypatch, operation):
     """A successful project response and ETag must already be visible to the next request."""
@@ -1136,14 +1167,20 @@ async def test_compact_project_ownership_keeps_direct_child_boundaries(scenario,
     )
 
 
-@pytest.mark.parametrize("operation", ["patch", "delete"])
-async def test_user_lifecycle_reloads_platform_authority_after_a_committed_demotion(scenario, operation):
-    """A request identity captured before demotion cannot authorize an identity writer."""
+@pytest.mark.parametrize("operation", ["create", "patch", "delete"])
+@pytest.mark.parametrize(("revoked_field", "expected_status"), [("is_superuser", 403), ("is_active", 401)])
+async def test_user_lifecycle_reloads_revoked_platform_authority(
+    scenario, monkeypatch, operation, revoked_field, expected_status
+):
+    """A request identity captured before revocation cannot authorize an identity writer."""
     from fastapi import HTTPException
-    from langflow.api.v1.users import delete_user, patch_user
-    from langflow.services.database.models.user.model import UserRead, UserUpdate
+    from langflow.api.v1.users import add_user, delete_user, patch_user
+    from langflow.services.database.models.user.model import UserCreate, UserRead, UserUpdate
+    from langflow.services.deps import get_settings_service
 
     state = scenario
+    monkeypatch.setattr(get_settings_service().auth_settings, "ENABLE_SIGNUP", False)
+    new_username = str(uuid4())
     admin = User(username=str(uuid4()), password=str(uuid4()), is_active=True, is_superuser=True)
     async with state.writable() as writer:
         await store.acquire_writer_lock(writer)
@@ -1152,24 +1189,101 @@ async def test_user_lifecycle_reloads_platform_authority_after_a_committed_demot
     request_actor = UserRead.model_validate(admin, from_attributes=True)
     async with state.writable() as writer:
         await store.acquire_writer_lock(writer)
-        (await writer.get(User, admin.id)).is_superuser = False
+        setattr(await writer.get(User, admin.id), revoked_field, False)
         await store.reconcile_policy(writer)
     async with state.writable() as writer:
-        mutation = (
-            patch_user(
+        if operation == "create":
+            mutation = add_user(
+                user=UserCreate(username=new_username, password=str(uuid4())),
+                current_user=request_actor,
+                session=writer,
+            )
+        elif operation == "patch":
+            mutation = patch_user(
                 user_id=state.recipient,
                 user_update=UserUpdate(is_active=False),
                 user=request_actor,
                 session=writer,
             )
-            if operation == "patch"
-            else delete_user(user_id=state.recipient, current_user=request_actor, session=writer)
-        )
+        else:
+            mutation = delete_user(user_id=state.recipient, current_user=request_actor, session=writer)
         with pytest.raises(HTTPException) as denied:
             await mutation
-        assert denied.value.status_code == 403
+        assert denied.value.status_code == expected_status
     async with state.readonly() as reader:
+        assert (await reader.exec(select(User).where(User.username == new_username))).first() is None
         assert (await reader.get(User, state.recipient)).is_active is True
+        assert (await store.verify_projection(reader))["valid"] is True
+
+
+@pytest.mark.parametrize(
+    "operation", ["create_role", "update_role", "delete_role", "create_assignment", "delete_assignment"]
+)
+@pytest.mark.parametrize(("revoked_field", "expected_status"), [("is_superuser", 403), ("is_active", 401)])
+async def test_role_writers_reload_revoked_platform_authority(scenario, operation, revoked_field, expected_status):
+    """Revocation committed before a policy writer must prevent every role mutation."""
+    from fastapi import HTTPException
+    from langflow.api.v1 import authz_role_assignments, authz_roles
+    from langflow.api.v1.schemas.authz_role_assignments import RoleAssignmentCreate
+    from langflow.api.v1.schemas.authz_roles import RoleCreate, RoleUpdate
+    from langflow.services.database.models.auth import AuthzRole, AuthzRoleAssignment, AuthzRoleAssignmentGrant
+    from langflow.services.database.models.user.model import UserRead
+
+    state = scenario
+    admin = User(username=str(uuid4()), password=str(uuid4()), is_active=True, is_superuser=True)
+    role = AuthzRole(name=str(uuid4()), permissions=["flow:read"])
+    assignment = AuthzRoleAssignment(user_id=state.recipient, role_id=role.id, domain_type="global")
+    new_name = str(uuid4())
+    async with state.writable() as writer:
+        await store.acquire_writer_lock(writer)
+        writer.add_all([admin, role])
+        await writer.flush()
+        if operation == "delete_assignment":
+            writer.add(assignment)
+            await writer.flush()
+            writer.add(AuthzRoleAssignmentGrant(assignment_id=assignment.id, source_kind="manual"))
+        await store.reconcile_policy(writer)
+    request_actor = UserRead.model_validate(admin, from_attributes=True)
+    async with state.writable() as writer:
+        await store.acquire_writer_lock(writer)
+        setattr(await writer.get(User, admin.id), revoked_field, False)
+        await store.reconcile_policy(writer)
+    async with state.writable() as writer:
+        if operation == "create_role":
+            mutation = authz_roles.create_role(
+                payload=RoleCreate(name=new_name, permissions=["flow:write"]),
+                current_user=request_actor,
+                session=writer,
+            )
+        elif operation == "update_role":
+            mutation = authz_roles.update_role(
+                role_id=role.id,
+                payload=RoleUpdate(permissions=["flow:write"]),
+                current_user=request_actor,
+                session=writer,
+            )
+        elif operation == "delete_role":
+            mutation = authz_roles.delete_role(role_id=role.id, current_user=request_actor, session=writer)
+        elif operation == "create_assignment":
+            mutation = authz_role_assignments.create_assignment(
+                payload=RoleAssignmentCreate(user_id=state.recipient, role_id=role.id),
+                current_user=request_actor,
+                session=writer,
+            )
+        else:
+            mutation = authz_role_assignments.delete_assignment(
+                assignment_id=assignment.id, current_user=request_actor, session=writer
+            )
+        with pytest.raises(HTTPException) as denied:
+            await mutation
+        assert denied.value.status_code == expected_status
+    async with state.readonly() as reader:
+        assert (await reader.exec(select(AuthzRole).where(AuthzRole.name == new_name))).first() is None
+        assert (await reader.get(AuthzRole, role.id)).permissions == ["flow:read"]
+        assignments = (
+            await reader.exec(select(AuthzRoleAssignment).where(AuthzRoleAssignment.role_id == role.id))
+        ).all()
+        assert len(assignments) == (1 if operation == "delete_assignment" else 0)
         assert (await store.verify_projection(reader))["valid"] is True
 
 

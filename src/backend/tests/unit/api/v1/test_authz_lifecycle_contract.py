@@ -775,7 +775,7 @@ async def test_assignment_delete_validates_live_row_before_mutation_and_stage(mo
 
     events: list[str] = []
     service = _LifecycleService(events)
-    actor = SimpleNamespace(id=uuid4(), is_active=True, is_superuser=True)
+    actor = User(username=str(uuid4()), password=str(uuid4()), is_active=True, is_superuser=True)
     assignment = SimpleNamespace(
         id=uuid4(),
         user_id=uuid4(),
@@ -784,7 +784,7 @@ async def test_assignment_delete_validates_live_row_before_mutation_and_stage(mo
         domain_id=None,
     )
     session = SimpleNamespace()
-    session.get = AsyncMock(return_value=assignment)
+    session.get = AsyncMock(side_effect=[actor, assignment])
     grant_result = SimpleNamespace(all=list)
     session.exec = AsyncMock(return_value=grant_result)
     session.delete = AsyncMock(side_effect=lambda _row: events.append("mutate"))
@@ -821,7 +821,7 @@ async def test_assignment_delete_policy_rejection_is_409_without_mutation(monkey
 
     events: list[str] = []
     service = _LifecycleService(events)
-    actor = SimpleNamespace(id=uuid4(), is_active=True, is_superuser=True)
+    actor = User(username=str(uuid4()), password=str(uuid4()), is_active=True, is_superuser=True)
     assignment = SimpleNamespace(
         id=uuid4(),
         user_id=uuid4(),
@@ -830,7 +830,7 @@ async def test_assignment_delete_policy_rejection_is_409_without_mutation(monkey
         domain_id=None,
     )
     session = SimpleNamespace()
-    session.get = AsyncMock(return_value=assignment)
+    session.get = AsyncMock(side_effect=[actor, assignment])
     grant_result = SimpleNamespace(all=list)
     session.exec = AsyncMock(return_value=grant_result)
     session.delete = AsyncMock()

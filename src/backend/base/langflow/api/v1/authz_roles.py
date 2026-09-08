@@ -16,6 +16,7 @@ from sqlmodel import select
 from langflow.api.utils import CurrentActiveUser, DbSession
 from langflow.api.v1.schemas.authz_roles import RoleCreate, RoleRead, RoleUpdate
 from langflow.services.authorization.audit import AUDIT_EVENT_ACCESS, AUDIT_EVENT_MUTATION
+from langflow.services.authorization.fetch import load_mutation_actor
 from langflow.services.authorization.lifecycle import (
     acquire_identity_mutation_lock,
     safe_identity_mutation_committed,
@@ -68,9 +69,14 @@ def _is_role_name_conflict(exc: IntegrityError) -> bool:
     return is_unique_violation and constraint_name == _ROLE_NAME_UNIQUE_INDEX
 
 
-async def _require_superuser(user, *, action: str, obj: str) -> None:
+async def _require_superuser(user, *, action: str, obj: str, session: DbSession | None = None) -> None:
     """Platform-administrator gate, including bypass and credential ceilings."""
+    if session is not None:
+        user = await load_mutation_actor(session, user.id)
     if not actor_can_administer_platform(user):
+        if session is not None:
+            # Release the policy writer before the independent durable denial audit.
+            await session.rollback()
         await _audit_deny(
             user_id=user.id,
             action=action,
@@ -184,6 +190,7 @@ async def create_role(
         session,
         kind=AuthorizationMutationKind.ROLE_CREATED,
     )
+    await _require_superuser(current_user, action="role:create", obj="role:*", session=session)
 
     if payload.parent_role_id is not None:
         parent = await session.get(AuthzRole, payload.parent_role_id)
@@ -272,6 +279,7 @@ async def update_role(
         kind=AuthorizationMutationKind.ROLE_UPDATED,
         entity_id=role_id,
     )
+    await _require_superuser(current_user, action="role:update", obj=f"role:{role_id}", session=session)
 
     role = await session.get(AuthzRole, role_id)
     if role is None:
@@ -452,6 +460,7 @@ async def delete_role(
         kind=AuthorizationMutationKind.ROLE_DELETED,
         entity_id=role_id,
     )
+    await _require_superuser(current_user, action="role:delete", obj=f"role:{role_id}", session=session)
 
     role = await session.get(AuthzRole, role_id)
     if role is None:

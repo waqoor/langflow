@@ -25,6 +25,7 @@ async def policy_db(tmp_path):
     """Real scratch database for selected-engine policy contracts."""
     import os
 
+    from langflow.services.database.models.api_key.model import ApiKey
     from langflow.services.database.models.auth import (
         AuthzAuditLog,
         AuthzRole,
@@ -58,6 +59,7 @@ async def policy_db(tmp_path):
         model.__table__
         for model in (
             User,
+            ApiKey,
             Variable,
             Folder,
             Flow,

@@ -410,14 +410,37 @@ async def teardown_superuser(settings_service: SettingsService, session: AsyncSe
         await logger.adebug("AUTO_LOGIN is set to False. Removing default superuser if unused.")
         try:
             username = DEFAULT_SUPERUSER
+            from lfx.services.authorization.base import (
+                AuthorizationMutation,
+                AuthorizationMutationKind,
+                UserAuthorizationSnapshot,
+            )
+
             from langflow.services.database.models.user.model import User
+            from langflow.services.deps import get_authorization_service
+
+            authorization = get_authorization_service()
+            await authorization.acquire_identity_mutation_lock(
+                session=session, kind=AuthorizationMutationKind.USER_DELETED
+            )
 
             stmt = select(User).where(User.username == username)
             result = await session.exec(stmt)
             user = result.first()
 
             if user and user.is_superuser is True and not user.last_login_at:
+                mutation = AuthorizationMutation(
+                    kind=AuthorizationMutationKind.USER_DELETED,
+                    entity_id=user.id,
+                    affected_user_ids=(user.id,),
+                    policy_relevant_fields=("is_active", "is_superuser"),
+                    user_before=UserAuthorizationSnapshot(is_active=user.is_active, is_superuser=user.is_superuser),
+                    user_after=None,
+                )
+                await authorization.validate_identity_mutation(session=session, mutation=mutation)
                 await session.delete(user)
+                await session.flush()
+                await authorization.stage_identity_mutation(session=session, event=mutation)
                 await logger.adebug("Default superuser removed successfully.")
         except Exception as exc:
             await logger.aexception("Could not remove default superuser.")

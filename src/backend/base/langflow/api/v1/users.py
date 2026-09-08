@@ -128,6 +128,21 @@ async def add_user(
             entity_id=new_user.id,
             affected_user_ids=(new_user.id,),
         )
+        if current_user is not None:
+            # Authentication can precede a committed demotion while this writer
+            # waits. Only current canonical authority can bypass signup settings.
+            actor = await load_mutation_actor(session, current_user.id)
+            is_platform_admin_caller = actor_can_administer_platform(actor)
+            if not is_platform_admin_caller and (auth_settings.AUTO_LOGIN or not auth_settings.ENABLE_SIGNUP):
+                await _audit_deny(
+                    user_id=actor.id,
+                    action="user:create",
+                    obj="user:*",
+                    status_code=403,
+                    reason="platform_authority_revoked",
+                    session=session,
+                )
+                raise HTTPException(status_code=403, detail="Public user registration is disabled.")
         session.add(new_user)
         await session.flush()
         await session.refresh(new_user)

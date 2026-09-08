@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import HTTPException
 from langflow.services.authorization.access_ceiling import ExternalAccessContext, set_current_external_access_context
+from langflow.services.database.models.user.model import User
 from lfx.services.authorization import BaseAuthorizationService
 from sqlalchemy.exc import IntegrityError
 
@@ -45,6 +46,8 @@ class _FakeAsyncSession:
         self.events: list[str] = []
 
     async def get(self, model: type, key: UUID, **_kwargs: Any) -> Any:
+        if model is User and (model, key) not in self._get_by_type:
+            return _TEST_USERS.get(key)
         return self._get_by_type.get((model, key))
 
     def add(self, obj: Any) -> None:
@@ -92,7 +95,7 @@ class _ExecResult:
         return iter(self._rows)
 
 
-_TEST_USERS: dict[UUID, SimpleNamespace] = {}
+_TEST_USERS: dict[UUID, User] = {}
 
 
 class _StubAuthz(BaseAuthorizationService):
@@ -154,12 +157,13 @@ class _StubAuthz(BaseAuthorizationService):
         self.committed_mutations.append(event)
 
 
-def _make_user(*, is_superuser: bool = False) -> SimpleNamespace:
-    user = SimpleNamespace(
+def _make_user(*, is_superuser: bool = False) -> User:
+    user = User(
         id=uuid4(),
         is_superuser=is_superuser,
         is_active=True,
         username="u",
+        password=str(uuid4()),
         profile_image=None,
     )
     _TEST_USERS[user.id] = user

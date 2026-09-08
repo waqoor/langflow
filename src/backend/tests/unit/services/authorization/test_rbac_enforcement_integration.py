@@ -647,21 +647,24 @@ async def test_casbin_collaborator_save_response_keeps_owner_credentials_private
     def content_must_not_compile(*_args, **_kwargs):
         pytest.fail("Content-only saves must not compile the complete authorization policy")
 
-    monkeypatch.setattr(store, "compile_policy", content_must_not_compile)
-    saved = await client.request(
-        method, path, headers={**editor_headers, "If-Match": observed.headers["etag"]}, json=payload
-    )
-    assert saved.status_code == 200, saved.text
-    assert secret not in saved.text
-    if resource_type == "project":
-        assert saved.json()["auth_settings"] is None
-    assert saved.json()["edit_revision"] == original["edit_revision"] + (0 if no_op else 1)
-    owner_read = await client.get(path, headers=owner_headers)
-    assert owner_read.status_code == 200, owner_read.text
-    if resource_type == "flow":
-        assert secret in owner_read.text
-    else:
-        assert owner_read.json()["auth_settings"] is not None
+    # Scope this guard to content requests; shutdown can delete the unused
+    # bootstrap identity and must reconcile that separate policy mutation.
+    with monkeypatch.context() as content_patch:
+        content_patch.setattr(store, "compile_policy", content_must_not_compile)
+        saved = await client.request(
+            method, path, headers={**editor_headers, "If-Match": observed.headers["etag"]}, json=payload
+        )
+        assert saved.status_code == 200, saved.text
+        assert secret not in saved.text
+        if resource_type == "project":
+            assert saved.json()["auth_settings"] is None
+        assert saved.json()["edit_revision"] == original["edit_revision"] + (0 if no_op else 1)
+        owner_read = await client.get(path, headers=owner_headers)
+        assert owner_read.status_code == 200, owner_read.text
+        if resource_type == "flow":
+            assert secret in owner_read.text
+        else:
+            assert owner_read.json()["auth_settings"] is not None
 
 
 @pytest.mark.parametrize("resource_type", ["flow", "project"])
@@ -678,27 +681,38 @@ async def test_casbin_unready_service_rejects_owner_writes_and_permission_discov
     observed = await client.get(path, headers=headers)
     assert observed.status_code == 200
     # Actual invalid canonical data makes the production readiness probe fail.
+    invalid_team = AuthzTeam(team_name="Unrepaired legacy team", adom_name=uuid4().hex)
     async with session_scope() as session:
-        session.add(AuthzTeam(team_name="Unrepaired legacy team", adom_name=uuid4().hex))
+        session.add(invalid_team)
         await session.commit()
-    assert await casbin_authorization.collaboration_ready() is False
-    for write_headers in (headers, {**headers, "If-Match": observed.headers["etag"]}):
-        saved = await client.patch(path, headers=write_headers, json={"description": "Must not persist"})
-        assert saved.status_code == 503, saved.text
-        assert saved.json()["detail"]["code"] == "AUTHORIZATION_NOT_READY"
-    permissions = await client.post(
-        "api/v1/authz/me/permissions",
-        headers=headers,
-        json={
-            "resource_type": resource_type,
-            "resource_ids": [str(resource_id)],
-        },
-    )
-    assert permissions.status_code == 503, permissions.text
-    async with session_scope() as session:
-        stored = await session.get(Flow if resource_type == "flow" else Folder, resource_id)
-        assert stored.description != "Must not persist"
-        assert stored.edit_revision == observed.json()["edit_revision"]
+    try:
+        assert await casbin_authorization.collaboration_ready() is False
+        for write_headers in (headers, {**headers, "If-Match": observed.headers["etag"]}):
+            saved = await client.patch(path, headers=write_headers, json={"description": "Must not persist"})
+            assert saved.status_code == 503, saved.text
+            assert saved.json()["detail"]["code"] == "AUTHORIZATION_NOT_READY"
+        permissions = await client.post(
+            "api/v1/authz/me/permissions",
+            headers=headers,
+            json={
+                "resource_type": resource_type,
+                "resource_ids": [str(resource_id)],
+            },
+        )
+        assert permissions.status_code == 503, permissions.text
+        async with session_scope() as session:
+            stored = await session.get(Flow if resource_type == "flow" else Folder, resource_id)
+            assert stored.description != "Must not persist"
+            assert stored.edit_revision == observed.json()["edit_revision"]
+    finally:
+        # Remove the deliberately invalid test input before normal lifecycle
+        # shutdown, which must reject rather than publish invalid policy.
+        from langflow.services.authorization.casbin import store
+
+        async with session_scope() as session:
+            await store.acquire_writer_lock(session)
+            await session.delete(await session.get(AuthzTeam, invalid_team.id))
+            await store.reconcile_policy(session)
 
 
 @pytest.mark.parametrize("resource_type", ["flow", "project"])
