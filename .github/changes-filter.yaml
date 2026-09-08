@@ -176,6 +176,7 @@ authz-sharing:
   - "src/backend/tests/unit/api/v1/test_deployment_guard_retry.py"
   - "src/backend/tests/unit/api/v1/test_deployment_route_handlers.py"
   - "src/backend/tests/unit/api/v1/test_deployment_sync.py"
+  - "src/backend/tests/unit/api/v1/test_projects.py"
   - "src/backend/tests/unit/api/v1/test_variable.py"
   - "src/backend/tests/unit/services/database/test_lock_retry.py"
   - "src/backend/tests/**/test_authz_*.py"

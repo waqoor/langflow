@@ -320,11 +320,13 @@ async def test_update_project_rename_onto_taken_name_returns_409(client: AsyncCl
     assert "parameters" not in detail
 
 
-async def test_update_project_cannot_rename_system_starter(monkeypatch):
+async def test_update_project_cannot_rename_system_starter(monkeypatch, client: AsyncClient):  # noqa: ARG001
     from langflow.api.v1 import projects as projects_module
     from langflow.services.database.models.folder.model import FolderUpdate
+    from langflow.services.database.models.user.model import User
 
     project_id = uuid4()
+    actor = User(username=str(uuid4()), password=str(uuid4()), is_active=True, is_superuser=False)
     system_starter = Folder(id=project_id, name=STARTER_FOLDER_NAME, user_id=None)
     monkeypatch.setattr(
         projects_module,
@@ -335,6 +337,7 @@ async def test_update_project_cannot_rename_system_starter(monkeypatch):
     locked_result = MagicMock()
     locked_result.first.return_value = system_starter
     session = AsyncMock()
+    session.get.return_value = actor
     session.get_bind = MagicMock(return_value=SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
     session.exec.return_value = locked_result
 
@@ -343,13 +346,14 @@ async def test_update_project_cannot_rename_system_starter(monkeypatch):
             session=session,
             project_id=project_id,
             project=FolderUpdate(name="Renamed starter"),
-            current_user=SimpleNamespace(id=uuid4(), is_active=True, is_superuser=False),
+            current_user=actor,
             background_tasks=BackgroundTasks(),
             response=Response(),
         )
 
     assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
     assert "cannot be renamed" in exc_info.value.detail
+    session.get.assert_awaited_once_with(User, actor.id, populate_existing=True)
 
 
 async def test_update_project_rejects_unowned_parent_id(

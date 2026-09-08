@@ -18,7 +18,7 @@ from langflow.services.authorization.share_management import (
     ShareMutationResult,
 )
 from langflow.services.database.models.auth import AuthzShare, SharePermissionLevel, ShareScope
-from lfx.services.authorization import ShareRuleSnapshot
+from lfx.services.authorization import BaseAuthorizationService, ShareRuleSnapshot
 from lfx.services.authorization.service import AuthorizationService as LfxAuthorizationService
 
 pytestmark = pytest.mark.no_blockbuster
@@ -29,6 +29,7 @@ _TEST_USERS: dict[UUID, SimpleNamespace] = {}
 @pytest.fixture(autouse=True)
 def native_collaboration_contract(monkeypatch):
     """Keep route tests focused while real service tests own DB invariants."""
+    from langflow.services.authorization import fetch, guards
     from langflow.services.authorization.share_management import _validate_value_contract
     from langflow.services.database.models.deployment.model import Deployment
     from langflow.services.database.models.file.model import File
@@ -39,6 +40,8 @@ def native_collaboration_contract(monkeypatch):
     from langflow.services.database.models.variable.model import Variable
 
     _TEST_USERS.clear()
+    for module in (fetch, guards):
+        monkeypatch.setattr(module, "get_authorization_service", lambda: shares_module.get_authorization_service())
 
     async def ready_capabilities():
         return SimpleNamespace(
@@ -234,7 +237,7 @@ class _FakeAsyncSession:
         return _ExecResult([])
 
 
-class _StubAuthz:
+class _StubAuthz(BaseAuthorizationService):
     """Pass-through authz service: allow everything, no cross-user fetch."""
 
     def __init__(self, *, cross_user: bool = False, enabled: bool = False, allow: bool = True) -> None:

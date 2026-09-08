@@ -160,7 +160,12 @@ def normalize_request(
         raise PolicyFormatError(msg)
     if identifier == "*" and (
         not collection_operation
-        or not (action == "create" or resource_type == "share" or (resource_type == "voice" and action == "read"))
+        or not (
+            action == "create"
+            or resource_type == "share"
+            or (resource_type == "voice" and action == "read")
+            or (resource_type == "variable" and action in {"write", "delete"})
+        )
     ):
         msg = "A collection request requires an existing server-classified collection operation."
         raise PolicyFormatError(msg)

@@ -429,7 +429,7 @@ jobs:
         run: |
           if [[ "$LANGFLOW_E2E_AUTHZ" == "true" ]]; then
             uv sync --locked --package langflow --package langflow-base --extra audio --extra authorization
-            uv run --no-sync python -c "from importlib.metadata import version; print('Authorization dependency: casbin==' + version('casbin'))"
+            uv run --no-sync python -c "import sqlite3; import sys; from importlib.metadata import version; print('Authorization runtime: casbin==' + version('casbin') + ' Python=' + sys.version.split()[0] + ' SQLite=' + sqlite3.sqlite_version)"
           else
             uv sync --extra audio
           fi

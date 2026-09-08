@@ -70,6 +70,8 @@ def test_authz_jobs_install_the_locked_optional_backend_dependency():
     assert "--package langflow --package langflow-base" in installation
     assert "--extra authorization" in installation
     assert "--extra postgresql" in installation
+    assert "sqlite3.sqlite_version" in installation
+    assert "sys.version.split()[0]" in installation
     execution = next(
         step
         for step in backend["steps"]
@@ -85,6 +87,8 @@ def test_authz_jobs_install_the_locked_optional_backend_dependency():
     assert "--package langflow --package langflow-base" in installation
     assert "--extra authorization" in installation
     assert "--extra audio" in installation
+    assert "sqlite3.sqlite_version" in installation
+    assert "sys.version.split()[0]" in installation
 
     unit_job = _workflow("python_test.yml")["jobs"]["build"]
     installation = next(step for step in unit_job["steps"] if step.get("name") == "Install the project")["run"]
@@ -205,6 +209,7 @@ def test_authz_path_filter_covers_every_contract_layer():
         "src/backend/tests/unit/api/v1/test_deployment_guard_retry.py",
         "src/backend/tests/unit/api/v1/test_deployment_route_handlers.py",
         "src/backend/tests/unit/api/v1/test_deployment_sync.py",
+        "src/backend/tests/unit/api/v1/test_projects.py",
         "src/backend/tests/unit/api/v1/test_variable.py",
         "src/backend/tests/unit/services/database/test_lock_retry.py",
         "src/backend/tests/unit/utils/test_flow_secrets.py",

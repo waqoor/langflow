@@ -383,7 +383,7 @@ jobs:
       - name: Install credential-free backend test dependencies
         run: |
           uv sync --locked --group dev --package langflow --package langflow-base --extra postgresql --extra authorization
-          uv run --no-sync python -c "from importlib.metadata import version; print('Authorization dependency: casbin==' + version('casbin'))"
+          uv run --no-sync python -c "import sqlite3; import sys; from importlib.metadata import version; print('Authorization runtime: casbin==' + version('casbin') + ' Python=' + sys.version.split()[0] + ' SQLite=' + sqlite3.sqlite_version)"
 
       - name: Run registered authorization migration, transaction, lifecycle, and API tests
         env:

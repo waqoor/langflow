@@ -715,6 +715,15 @@ class CasbinAuthorizationService(BaseAuthorizationService):
         resource_type: str,
         context: dict[str, Any],
     ) -> ResourceRecord | None:
+        # Model settings use the existing server-classified personal variable
+        # collection. The caller was loaded as active in this same snapshot.
+        if (
+            resource_type == "variable"
+            and context.get("resource_type") == "variable"
+            and context.get("resource_id") is None
+            and context.get("variable_user_id") == user_id
+        ):
+            return ResourceRecord(resource_type, UUID(int=0), user_id)
         if context.get("intrinsic_creation") is not True:
             return None
 

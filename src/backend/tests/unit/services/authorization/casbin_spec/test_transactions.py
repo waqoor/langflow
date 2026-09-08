@@ -482,12 +482,13 @@ async def test_deployment_deletions_reconcile_derived_policy(scenario, delete_ki
     from langflow.services.database.models.deployment import crud
     from langflow.services.database.models.deployment.model import Deployment
     from langflow.services.database.models.deployment_provider_account.model import DeploymentProviderAccount
+    from langflow.services.database.models.deployment_provider_account.schemas import DeploymentProviderKey
 
     state = scenario
     provider = DeploymentProviderAccount(
         user_id=state.owner,
         name=str(uuid4()),
-        provider_key="watsonx_orchestrate",
+        provider_key=DeploymentProviderKey.WATSONX_ORCHESTRATE,
         provider_url="https://example.test",
         api_key=str(uuid4()),
     )
@@ -547,13 +548,14 @@ async def test_provider_reconciliation_releases_network_before_atomic_policy_wri
     from langflow.api.v1.mappers.deployments import sync
     from langflow.services.database.models.deployment.model import Deployment
     from langflow.services.database.models.deployment_provider_account.model import DeploymentProviderAccount
+    from langflow.services.database.models.deployment_provider_account.schemas import DeploymentProviderKey
 
     state = scenario
     providers = [
         DeploymentProviderAccount(
             user_id=state.owner,
             name=str(uuid4()),
-            provider_key="watsonx_orchestrate",
+            provider_key=DeploymentProviderKey.WATSONX_ORCHESTRATE,
             provider_url=f"https://example.test/{index}",
             api_key=str(uuid4()),
         )
@@ -611,7 +613,7 @@ async def test_provider_reconciliation_releases_network_before_atomic_policy_wri
             operation = sync._sync_deployments_and_attachments_by_provider(
                 db=writer,
                 user_id=state.owner,
-                deployments_with_provider=[(row, "watsonx_orchestrate") for row in deployments],
+                deployments_with_provider=[(row, DeploymentProviderKey.WATSONX_ORCHESTRATE) for row in deployments],
                 stale_scope_label="project",
                 failure_log_message="provider failed %s %s",
                 failure_scope_value=state.project,
@@ -760,6 +762,7 @@ async def test_model_status_deletion_keeps_the_complete_caller_transaction(scena
     from lfx.base.models.unified_models.credentials import model_status_key
 
     state = scenario
+    monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_ENABLED", True)
     identity = model_status_key("OpenAI", "test-model", "llm")
     disabled = Variable(name=models.DISABLED_MODELS_VAR, value="[]", type="Generic", user_id=state.owner)
     enabled = Variable(
@@ -804,6 +807,36 @@ async def test_model_status_deletion_keeps_the_complete_caller_transaction(scena
         assert json.loads((await reader.get(Variable, disabled.id)).value) == [identity]
         assert await reader.get(Variable, enabled.id) is None
         assert (await store.verify_projection(reader))["valid"] is True
+
+
+@pytest.mark.parametrize("action", ["write", "delete"])
+async def test_personal_variable_collection_requires_active_owner_and_credential_ceiling(scenario, action):
+    """PC-20/23: personal model settings preserve ownership without broad variable authority."""
+    from langflow.services.authorization.access_ceiling import (
+        ExternalAccessContext,
+        clear_current_external_access_context,
+        set_current_external_access_context,
+    )
+
+    state = scenario
+    service = state.services[0]
+    context = {"resource_type": "variable", "resource_id": None, "variable_user_id": state.owner}
+    request = {"user_id": state.owner, "domain": "*", "obj": "variable:*", "act": action}
+    assert await service.enforce(**request, context=context)
+    assert not await service.enforce(**request, context={})
+    assert not await service.enforce(**request, context={**context, "variable_user_id": state.recipient})
+    set_current_external_access_context(ExternalAccessContext(provider="test", subject="test", level="viewer"))
+    try:
+        assert not await service.enforce(**request, context=context)
+    finally:
+        clear_current_external_access_context()
+    async with state.writable() as writer:
+        await store.acquire_writer_lock(writer)
+        owner = await writer.get(User, state.owner)
+        owner.is_active = False
+        writer.add(owner)
+        await store.reconcile_policy(writer)
+    assert not await service.enforce(**request, context=context)
 
 
 async def test_starter_deletion_reconciles_policy_in_the_caller_transaction(scenario):

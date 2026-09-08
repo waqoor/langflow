@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import HTTPException
 from langflow.services.authorization.access_ceiling import ExternalAccessContext, set_current_external_access_context
+from lfx.services.authorization import BaseAuthorizationService
 from sqlalchemy.exc import IntegrityError
 
 # --- shared fakes ----------------------------------------------------- #
@@ -94,7 +95,7 @@ class _ExecResult:
 _TEST_USERS: dict[UUID, SimpleNamespace] = {}
 
 
-class _StubAuthz:
+class _StubAuthz(BaseAuthorizationService):
     def __init__(self, *, allow: bool = True) -> None:
         self._allow = allow
         self.invalidate_user_calls: list[UUID] = []
@@ -318,10 +319,11 @@ def _make_role_row(
 @pytest.fixture
 def stub_authz(monkeypatch):
     from langflow.api.v1 import authz_me, authz_role_assignments, authz_roles, authz_teams
+    from langflow.services.authorization import fetch, guards
 
     def _apply(*, allow: bool = True) -> _StubAuthz:
         stub = _StubAuthz(allow=allow)
-        for module in (authz_roles, authz_role_assignments, authz_teams, authz_me):
+        for module in (authz_roles, authz_role_assignments, authz_teams, authz_me, fetch, guards):
             monkeypatch.setattr(module, "get_authorization_service", lambda s=stub: s)
         return stub
 
