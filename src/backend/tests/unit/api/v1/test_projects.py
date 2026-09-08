@@ -417,6 +417,7 @@ async def test_delete_project_cannot_delete_system_starter(monkeypatch):
             session=AsyncMock(),
             project_id=project_id,
             current_user=SimpleNamespace(id=uuid4()),
+            background_tasks=BackgroundTasks(),
         )
 
     assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
