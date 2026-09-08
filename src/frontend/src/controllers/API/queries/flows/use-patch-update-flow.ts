@@ -93,7 +93,21 @@ export const usePatchUpdateFlow: useMutationFunctionType<
         }
         await options?.onSuccess?.(...args);
       },
-      onSettled: (...args) => {
+      onSettled: async (...args) => {
+        const [, error, variables] = args;
+        const status = (error as { response?: { status?: number } } | null)
+          ?.response?.status;
+        if (status === 403 || status === 404) {
+          // Drop the old allow projection immediately, then ask the existing
+          // permission endpoint again without replacing the unsaved graph.
+          await queryClient.resetQueries({
+            queryKey: ["useGetEffectivePermissions"],
+            predicate: ({ queryKey }) =>
+              queryKey[2] === "flow" &&
+              Array.isArray(queryKey[3]) &&
+              queryKey[3].includes(variables.id),
+          });
+        }
         queryClient.invalidateQueries({
           queryKey: ["useGetRefreshFlowsQuery"],
         });
@@ -103,7 +117,7 @@ export const usePatchUpdateFlow: useMutationFunctionType<
         queryClient.invalidateQueries({
           queryKey: ["useGetFolder"],
         });
-        options?.onSettled?.(...args);
+        await options?.onSettled?.(...args);
       },
     });
 

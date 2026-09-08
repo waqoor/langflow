@@ -1,4 +1,6 @@
 export const AUTHZ_JOURNEY_IDS: readonly string[];
+export const AUTHZ_STARTUP_LOG: string;
+export function assertAuthzStartup(log: string): string;
 export function isAuthzE2EMode(env?: NodeJS.ProcessEnv): boolean;
 export function getE2EArtifactNamespace(
   env?: NodeJS.ProcessEnv,

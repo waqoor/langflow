@@ -30,6 +30,7 @@ from langflow.services.authorization.collaboration import (
     CollaborationCapabilityError,
     discover_collaboration_capabilities,
 )
+from langflow.services.authorization.fetch import authorization_admission
 from langflow.services.authorization.guards import should_apply_owner_override
 from langflow.services.authorization.repository import (
     load_active_user,
@@ -186,6 +187,7 @@ async def _derive_resource_capabilities(
     external_context = get_current_external_access_context()
     credential_can_manage_shares = external_context is None or external_context.level == EXTERNAL_ACCESS_ADMIN
     platform_admin = actor_can_administer_platform(current_user)
+    authz = get_authorization_service()
     for resource_id, resource in resources.items():
         allowed = set(permissions.get(resource_id, ()))
         owns = resource.owner_id == current_user.id
@@ -202,7 +204,15 @@ async def _derive_resource_capabilities(
             can_use=("execute" in allowed if resource.resource_type == "flow" else "read" in allowed),
             can_edit="write" in allowed and external_access_allows("write"),
             can_create_flow=(
-                resource.resource_type == "project" and "write" in allowed and external_access_allows("create")
+                resource.resource_type == "project"
+                and external_access_allows("create")
+                and await authz.enforce(
+                    user_id=current_user.id,
+                    domain="*",
+                    obj="flow:*",
+                    act="create",
+                    context={"intrinsic_creation": True, "folder_id": resource.resource_id},
+                )
             ),
             can_delete="delete" in allowed and external_access_allows("delete"),
             can_move=(
@@ -279,52 +289,53 @@ async def get_effective_permissions(
     flooding the audit log with denied probes. Empty list for a resource_id
     means the user cannot perform any of the requested actions on that resource.
     """
-    if not body.resource_ids:
-        return EffectivePermissionsResponse(resource_type=body.resource_type, permissions={}, capabilities={})
-    if len(body.resource_ids) > _MAX_RESOURCE_IDS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"resource_ids capped at {_MAX_RESOURCE_IDS}",
-        )
+    async with authorization_admission(session) as admission:
+        if not body.resource_ids:
+            return EffectivePermissionsResponse(resource_type=body.resource_type, permissions={}, capabilities={})
+        if len(body.resource_ids) > _MAX_RESOURCE_IDS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"resource_ids capped at {_MAX_RESOURCE_IDS}",
+            )
 
-    # Authentication may have JIT-created this user in the shared request session.
-    actor = await load_active_user(session, current_user.id)
-    if actor is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
-    authz = get_authorization_service()
-    actions = tuple(body.actions) if body.actions else _DEFAULT_ACTIONS
-    permissions = await authz.get_effective_permissions(
-        user_id=current_user.id,
-        resource_type=body.resource_type,
-        resource_ids=body.resource_ids,
-        actions=actions,
-        domain=body.domain,
-        context={
-            **current_auth_context_for_authz(),
-            "is_superuser": current_user.is_superuser,
-        },
-    )
-    permissions = await _apply_owner_permissions(
-        session=session,
-        permissions=permissions,
-        resource_type=body.resource_type,
-        resource_ids=body.resource_ids,
-        actions=actions,
-        user_id=current_user.id,
-    )
-    permissions = {
-        resource_id: filter_actions_by_external_access_ceiling(allowed_actions)
-        for resource_id, allowed_actions in permissions.items()
-    }
-    capabilities = await _derive_resource_capabilities(
-        session=session,
-        current_user=actor,
-        resource_type=body.resource_type,
-        resource_ids=body.resource_ids,
-        permissions=permissions,
-    )
-    return EffectivePermissionsResponse(
-        resource_type=body.resource_type,
-        permissions=permissions,
-        capabilities=capabilities,
-    )
+        # Authentication may have JIT-created this user in the shared request session.
+        actor = await load_active_user(admission, current_user.id)
+        if actor is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
+        authz = get_authorization_service()
+        actions = tuple(body.actions) if body.actions else _DEFAULT_ACTIONS
+        permissions = await authz.get_effective_permissions(
+            user_id=current_user.id,
+            resource_type=body.resource_type,
+            resource_ids=body.resource_ids,
+            actions=actions,
+            domain=body.domain,
+            context={
+                **current_auth_context_for_authz(),
+                "is_superuser": current_user.is_superuser,
+            },
+        )
+        permissions = await _apply_owner_permissions(
+            session=admission,
+            permissions=permissions,
+            resource_type=body.resource_type,
+            resource_ids=body.resource_ids,
+            actions=actions,
+            user_id=current_user.id,
+        )
+        permissions = {
+            resource_id: filter_actions_by_external_access_ceiling(allowed_actions)
+            for resource_id, allowed_actions in permissions.items()
+        }
+        capabilities = await _derive_resource_capabilities(
+            session=admission,
+            current_user=actor,
+            resource_type=body.resource_type,
+            resource_ids=body.resource_ids,
+            permissions=permissions,
+        )
+        return EffectivePermissionsResponse(
+            resource_type=body.resource_type,
+            permissions=permissions,
+            capabilities=capabilities,
+        )

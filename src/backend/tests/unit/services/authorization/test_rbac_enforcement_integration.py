@@ -1,6 +1,6 @@
 """HTTP coverage for production authorization and isolated plugin route guards.
 
-Native-service cases use real identities, committed grants, and database writes.
+Casbin-service cases use real identities, committed grants, and database writes.
 The compatibility cases retain :class:`PolicyTestAuthorizationService`
 (see ``_policy_double``) as an interface-isolation fixture and exercise the
 *real* flow routes over HTTP, validating that:
@@ -26,7 +26,7 @@ from uuid import UUID, uuid4
 import pytest
 from langflow.api.v1.knowledge_bases import KBStorageHelper
 from langflow.services.auth.mcp_encryption import encrypt_auth_settings
-from langflow.services.authorization.service import LangflowAuthorizationService
+from langflow.services.authorization.casbin.service import CasbinAuthorizationService
 from langflow.services.database.models.auth import AuthzTeam
 from langflow.services.database.models.flow.model import Flow
 from langflow.services.database.models.folder.model import Folder
@@ -49,10 +49,10 @@ _PASSWORD = "testpassword"  # noqa: S105 — test-only credential  # pragma: all
 
 
 @pytest.fixture
-def native_authorization(client, monkeypatch):  # noqa: ARG001 - initialize the real application before enabling authz
+def casbin_authorization(client, monkeypatch):  # noqa: ARG001 - initialize the real application before enabling authz
     """Use the application's registered production service, never the policy double."""
     service = get_authorization_service()
-    assert type(service) is LangflowAuthorizationService
+    assert type(service) is CasbinAuthorizationService
     monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_ENABLED", True)
     monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_AUDIT_ENABLED", True)
     monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_AUDIT_DURABLE", True)
@@ -385,7 +385,7 @@ async def test_project_scoped_developer_can_create_flow_in_foreign_project(clien
     assert upload.json()[0]["workspace_id"] == str(workspace_id)
 
 
-async def test_disabled_native_authz_rejects_explicit_foreign_project(client):
+async def test_disabled_registered_authz_rejects_explicit_foreign_project(client, casbin_authorization):
     """Disabled enforcement never redirects an explicit foreign destination."""
     project_owner_id = await _make_user(f"project_owner_{uuid4().hex}")
     foreign_project_id = await _make_project(project_owner_id, f"foreign_project_{uuid4().hex}")
@@ -395,6 +395,7 @@ async def test_disabled_native_authz_rejects_explicit_foreign_project(client):
 
     settings = get_settings_service()
     authz = get_authorization_service()
+    assert authz is casbin_authorization
     assert await authz.supports_cross_user_fetch() is True
     saved_authz_enabled = settings.auth_settings.AUTHZ_ENABLED
     settings.auth_settings.AUTHZ_ENABLED = False
@@ -585,10 +586,10 @@ async def test_developer_can_create_files_and_knowledge_bases(client, monkeypatc
 @pytest.mark.parametrize("resource_type", ["flow", "project"])
 @pytest.mark.parametrize("method", ["PATCH", "PUT"])
 @pytest.mark.parametrize("no_op", [False, True])
-async def test_native_collaborator_save_response_keeps_owner_credentials_private(
-    client, native_authorization, resource_type, method, no_op
+async def test_casbin_collaborator_save_response_keeps_owner_credentials_private(
+    client, casbin_authorization, resource_type, method, no_op, monkeypatch
 ):
-    assert await native_authorization.is_enabled()
+    assert await casbin_authorization.is_enabled()
     owner_name, editor_name = f"owner_{uuid4().hex}", f"editor_{uuid4().hex}"
     owner_id, editor_id = await _make_user(owner_name), await _make_user(editor_name)
     owner_headers, editor_headers = await _login(client, owner_name), await _login(client, editor_name)
@@ -640,6 +641,13 @@ async def test_native_collaborator_save_response_keeps_owner_credentials_private
     payload = {"name": original["name"]}
     if not no_op:
         payload["description"] = "A collaborator's content edit"
+
+    from langflow.services.authorization.casbin import store
+
+    def content_must_not_compile(*_args, **_kwargs):
+        pytest.fail("Content-only saves must not compile the complete authorization policy")
+
+    monkeypatch.setattr(store, "compile_policy", content_must_not_compile)
     saved = await client.request(
         method, path, headers={**editor_headers, "If-Match": observed.headers["etag"]}, json=payload
     )
@@ -657,8 +665,8 @@ async def test_native_collaborator_save_response_keeps_owner_credentials_private
 
 
 @pytest.mark.parametrize("resource_type", ["flow", "project"])
-async def test_native_unready_service_rejects_owner_writes_and_permission_discovery(
-    client, native_authorization, resource_type
+async def test_casbin_unready_service_rejects_owner_writes_and_permission_discovery(
+    client, casbin_authorization, resource_type
 ):
     username = f"unready_owner_{uuid4().hex}"
     owner_id = await _make_user(username)
@@ -673,7 +681,7 @@ async def test_native_unready_service_rejects_owner_writes_and_permission_discov
     async with session_scope() as session:
         session.add(AuthzTeam(team_name="Unrepaired legacy team", adom_name=uuid4().hex))
         await session.commit()
-    assert await native_authorization.collaboration_ready() is False
+    assert await casbin_authorization.collaboration_ready() is False
     for write_headers in (headers, {**headers, "If-Match": observed.headers["etag"]}):
         saved = await client.patch(path, headers=write_headers, json={"description": "Must not persist"})
         assert saved.status_code == 503, saved.text
@@ -694,8 +702,8 @@ async def test_native_unready_service_rejects_owner_writes_and_permission_discov
 
 
 @pytest.mark.parametrize("resource_type", ["flow", "project"])
-async def test_native_effective_permissions_never_invents_owner_actions(client, native_authorization, resource_type):
-    assert await native_authorization.is_enabled()
+async def test_casbin_effective_permissions_never_invents_owner_actions(client, casbin_authorization, resource_type):
+    assert await casbin_authorization.is_enabled()
     username = f"action_owner_{uuid4().hex}"
     owner_id = await _make_user(username)
     headers = await _login(client, username)
@@ -718,12 +726,71 @@ async def test_native_effective_permissions_never_invents_owner_actions(client, 
     assert ("execute" in allowed) is (resource_type == "flow")
 
 
+@pytest.mark.parametrize("operation", ["create", "rename", "delete"])
+async def test_casbin_project_mcp_changes_rollback_with_the_project(
+    client, casbin_authorization, monkeypatch, operation
+):
+    """A failure after MCP staging cannot commit project, server or credential changes."""
+    from langflow.api.v1 import projects
+    from langflow.services.database.models import MCPServer
+    from langflow.services.database.models.api_key.model import ApiKey
+    from sqlmodel import select
+
+    assert await casbin_authorization.is_enabled()
+    monkeypatch.setattr(get_settings_service().settings, "add_projects_to_mcp_servers", True)
+    username = f"mcp_owner_{uuid4().hex}"
+    owner_id = await _make_user(username)
+    headers = await _login(client, username)
+    name = f"mcp_{uuid4().hex[:8]}"
+    created = await client.post("api/v1/projects/", headers=headers, json={"name": name})
+    assert created.status_code == 201, created.text
+    project_id = UUID(created.json()["id"])
+    path = f"api/v1/projects/{project_id}"
+
+    async def persisted():
+        async with session_scope() as session:
+            folders = (await session.exec(select(Folder).where(Folder.user_id == owner_id))).all()
+            servers = (await session.exec(select(MCPServer).where(MCPServer.user_id == owner_id))).all()
+            keys = (await session.exec(select(ApiKey.id).where(ApiKey.user_id == owner_id))).all()
+            return (
+                sorted((str(row.id), row.name, row.edit_revision) for row in folders),
+                sorted((str(row.id), row.name, row.version) for row in servers),
+                sorted(str(key) for key in keys),
+            )
+
+    before = await persisted()
+    assert before[1], "The test must exercise an actual persisted MCP server"
+    helper_name = {"create": "_new_project", "rename": "_apply_project_update", "delete": "cleanup_mcp_on_delete"}[
+        operation
+    ]
+    original = getattr(projects, helper_name)
+
+    async def fail_after_staging(*args, **kwargs):
+        await original(*args, **kwargs)
+        msg = "injected failure after MCP staging"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(projects, helper_name, fail_after_staging)
+    if operation == "create":
+        failed = await client.post("api/v1/projects/", headers=headers, json={"name": name + " second"})
+    else:
+        observed = await client.get(path, headers=headers)
+        write_headers = {**headers, "If-Match": observed.headers["etag"]}
+        failed = await (
+            client.patch(path, headers=write_headers, json={"name": name + " renamed"})
+            if operation == "rename"
+            else client.delete(path, headers=write_headers)
+        )
+    assert failed.status_code == 500, failed.text
+    assert await persisted() == before
+
+
 @pytest.mark.parametrize("resource_type", ["flow", "project"])
 @pytest.mark.parametrize("audit_enabled", [False, True])
-async def test_native_concurrent_writes_accept_exactly_one_observed_revision(
-    client, native_authorization, monkeypatch, resource_type, audit_enabled
+async def test_casbin_concurrent_writes_accept_exactly_one_observed_revision(
+    client, casbin_authorization, monkeypatch, resource_type, audit_enabled
 ):
-    assert await native_authorization.is_enabled()
+    assert await casbin_authorization.is_enabled()
     monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_AUDIT_ENABLED", audit_enabled)
     username = f"concurrent_owner_{uuid4().hex}"
     owner_id = await _make_user(username)
@@ -753,10 +820,10 @@ async def test_native_concurrent_writes_accept_exactly_one_observed_revision(
 
 @pytest.mark.parametrize("resource_type", ["flow", "bulk_flow", "project"])
 @pytest.mark.parametrize("audit_enabled", [False, True])
-async def test_native_delete_cannot_remove_a_concurrently_updated_revision(
-    client, native_authorization, monkeypatch, resource_type, audit_enabled
+async def test_casbin_delete_cannot_remove_a_concurrently_updated_revision(
+    client, casbin_authorization, monkeypatch, resource_type, audit_enabled
 ):
-    assert await native_authorization.is_enabled()
+    assert await casbin_authorization.is_enabled()
     monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_AUDIT_ENABLED", audit_enabled)
     username = f"delete_race_owner_{uuid4().hex}"
     owner_id = await _make_user(username)

@@ -28,7 +28,7 @@ interface MutationCallbacks {
     error: unknown,
     payload: PatchPayload,
     context: unknown,
-  ) => void;
+  ) => void | Promise<void>;
 }
 
 jest.mock("@/controllers/API/api", () => ({
@@ -50,10 +50,15 @@ jest.mock("@/controllers/API/services/request-processor", () => ({
         options: MutationCallbacks,
       ) => ({
         mutate: async (payload: PatchPayload) => {
-          const result = await fn(payload);
-          await options?.onSuccess?.(result, payload, undefined);
-          options?.onSettled?.(result, null, payload, undefined);
-          return result;
+          try {
+            const result = await fn(payload);
+            await options?.onSuccess?.(result, payload, undefined);
+            await options?.onSettled?.(result, null, payload, undefined);
+            return result;
+          } catch (error) {
+            await options?.onSettled?.(undefined, error, payload, undefined);
+            throw error;
+          }
         },
       }),
     ),
@@ -71,6 +76,67 @@ describe("usePatchUpdateFlow", () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
+
+  it.each([403, 404])(
+    "clears the rejected flow's cached permissions after %s, including when the permission refresh fails",
+    async (status) => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const permissionKey = [
+        "useGetEffectivePermissions",
+        "recipient",
+        "flow",
+        ["flow-1"],
+        "default",
+        "*",
+      ];
+      const otherFlowKey = [...permissionKey];
+      otherFlowKey[3] = ["flow-2"];
+      const granted = { permissions: { "flow-1": ["read", "write"] } };
+      queryClient.setQueryData(permissionKey, granted);
+      queryClient.setQueryData(otherFlowKey, granted);
+      const observer = new QueryObserver(queryClient, {
+        queryKey: permissionKey,
+        queryFn: async () => {
+          throw new Error("permission service unavailable");
+        },
+        staleTime: Infinity,
+        retry: false,
+      });
+      const unsubscribe = observer.subscribe(() => undefined);
+      mockQueryClient.resetQueries.mockImplementationOnce((filters) =>
+        queryClient.resetQueries(filters),
+      );
+      const rejection = { response: { status } };
+      mockApiPatch.mockRejectedValueOnce(rejection);
+      const onSettled = jest.fn();
+
+      try {
+        await expect(
+          usePatchUpdateFlow({ onSettled }).mutate({
+            id: "flow-1",
+            edit_revision: 7,
+            name: "Unsaved local draft",
+          }),
+        ).rejects.toBe(rejection);
+
+        expect(observer.getCurrentResult().data).toBeUndefined();
+        expect(observer.getCurrentResult().isError).toBe(true);
+        expect(queryClient.getQueryData(otherFlowKey)).toEqual(granted);
+        expect(mockApiPatch).toHaveBeenCalledTimes(1);
+        expect(onSettled).toHaveBeenCalledWith(
+          undefined,
+          rejection,
+          expect.objectContaining({ edit_revision: 7 }),
+          undefined,
+        );
+      } finally {
+        unsubscribe();
+        queryClient.clear();
+      }
+    },
+  );
 
   it("should_refresh_global_flows_cache_when_flow_is_moved_to_new_folder", async () => {
     // Arrange — backend responds with the updated flow (FlowRead)

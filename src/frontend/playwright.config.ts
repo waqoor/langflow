@@ -3,6 +3,7 @@ import * as dotenv from "dotenv";
 import path from "path";
 import { PORT } from "./src/customization/config-constants";
 import {
+  AUTHZ_STARTUP_LOG,
   getE2EArtifactNamespace,
   getE2EDatabaseDirectory,
   getE2ETestIgnore,
@@ -146,7 +147,10 @@ export default defineConfig({
     },
     {
       command:
-        "uv run uvicorn --factory langflow.main:create_app --host localhost --port 7860 --loop asyncio --log-level error --no-access-log",
+        (authzMode
+          ? "node tests/fixtures/prepare-authz-server.mjs && uv run --no-sync"
+          : "uv run") +
+        " uvicorn --factory langflow.main:create_app --host localhost --port 7860 --loop asyncio --log-level error --no-access-log",
       port: 7860,
       env: {
         LANGFLOW_DATABASE_URL: `sqlite:///./${databaseDirectory}`,
@@ -163,7 +167,8 @@ export default defineConfig({
         LANGFLOW_AUTHZ_AUDIT_DURABLE: authzMode ? "true" : "false",
         LANGFLOW_AUTHZ_AUDIT_RETENTION_DAYS: "30",
         LANGFLOW_DEACTIVATE_TRACING: "true",
-        LANGFLOW_LOG_LEVEL: "ERROR",
+        LANGFLOW_LOG_LEVEL: authzMode ? "INFO" : "ERROR",
+        ...(authzMode ? { LANGFLOW_LOG_FILE: AUTHZ_STARTUP_LOG } : {}),
         OPENAI_API_KEY: "langflow-loopback-test-key", // pragma: allowlist secret
         OPENAI_BASE_URL: "http://127.0.0.1:8787/v1",
         // The E2E harness intentionally routes provider calls to its local OpenAI stub.

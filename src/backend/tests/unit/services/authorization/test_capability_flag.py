@@ -103,9 +103,11 @@ def test_share_rule_snapshot_is_framework_neutral_and_immutable():
 
 
 @pytest.mark.anyio
-async def test_langflow_native_service_supports_cross_user_fetch_contract():
-    """The enhanced native service resolves foreign rows before enforcing policy."""
-    service = LangflowAuthorizationService(_settings())
+async def test_casbin_service_supports_cross_user_fetch_contract():
+    """The selected service resolves foreign rows before enforcing policy."""
+    from langflow.services.authorization.casbin.service import CasbinAuthorizationService
+
+    service = CasbinAuthorizationService(_settings())
     assert await service.supports_cross_user_fetch() is True
     assert await service.supports_api_key_scopes() is False
     assert await service.supports_team_roles() is True

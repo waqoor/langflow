@@ -8,8 +8,8 @@ resolve a stale snapshot. ``busy_timeout`` therefore has no effect on this
 class of failure — the only valid recovery is to end the transaction and run it
 again against a fresh snapshot, which is what :func:`run_with_lock_retry` does.
 
-PostgreSQL deployments do not retry database exceptions here: the database
-predicate below only matches SQLite lock errors.  Callers may also raise
+PostgreSQL lock, deadlock and serialization failures also restart the complete
+transaction. Callers may also raise
 ``RetryableTransactionError`` after a preliminary identifier set changes while
 they acquire the repository's documented cross-entity lock order.  That
 explicit signal is safe to replay on every supported database because the
@@ -56,13 +56,27 @@ class RetryableTransactionError(Exception):
     """Mark a transaction whose canonical lock set changed during acquisition."""
 
 
+class TransactionRepairError(RetryableTransactionError):
+    """Request one external repair after rollback, before replaying the whole write."""
+
+    def __init__(self, *, key: str, repair: Callable[[], Awaitable[None]], cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.key = key
+        self.repair = repair
+        self.cause = cause
+
+
 def is_database_lock_error(exc: BaseException | None) -> bool:
-    """Return True when *exc* (or anything it wraps) is a transient SQLite lock error."""
+    """Recognize driver lock/deadlock/serialization codes, never SQL parameter text."""
     seen: set[int] = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
+        if isinstance(exc, RetryableTransactionError) and not isinstance(exc, TransactionRepairError):
+            return True
         error_name = getattr(exc, "sqlite_errorname", None)
         if error_name in _SQLITE_LOCK_ERROR_NAMES:
+            return True
+        if (getattr(exc, "sqlstate", None) or getattr(exc, "pgcode", None)) in {"40001", "40P01", "55P03"}:
             return True
         # SQLAlchemy's wrapper text contains the SQL statement and bound
         # parameters. Inspect only the underlying SQLite operational error so
@@ -104,16 +118,23 @@ async def run_with_lock_retry(
     exhausted retry budget to their own response.
     """
     last_attempt = attempts - 1
+    repaired: set[str] = set()
     for attempt in range(attempts):
         try:
             return await operation(attempt)
         except Exception as exc:
+            if isinstance(exc, TransactionRepairError) and (exc.key in repaired or attempt == last_attempt):
+                raise exc.cause from exc
             retryable = isinstance(exc, RetryableTransactionError) or is_database_lock_error(exc)
             if attempt == last_attempt or not retryable:
                 raise
             # The snapshot is stale: roll the transaction back so the retry
             # reads current data instead of failing on the same conflict.
             await session.rollback()
+            if isinstance(exc, TransactionRepairError):
+                await exc.repair()
+                repaired.add(exc.key)
+                continue
             delay = min(base_delay * (2**attempt), MAX_LOCK_RETRY_DELAY)
             # Jitter keeps concurrent losers from colliding again in lockstep.
             await asyncio.sleep(delay * (0.5 + random.random()))  # noqa: S311

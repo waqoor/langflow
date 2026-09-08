@@ -142,6 +142,12 @@ async def _audit_guard_decision(
     if _capability_probe.get():
         return
 
+    from lfx.services.authorization.context import current_authorization_session
+
+    context = current_authorization_session()
+    if session is None and context is not None and context.mutation:
+        session = context.session
+
     tagged_details = {**(details or {}), "event": _audit.AUDIT_EVENT_DECISION}
     if session is not None:
         if result == _audit.AUDIT_DENY:
@@ -182,13 +188,20 @@ async def _api_key_scopes_require_plugin_enforcement() -> bool:
         return False
     try:
         return bool(await supports_api_key_scopes())
-    except Exception:  # noqa: BLE001
-        logger.exception("Authorization plugin failed API-key scope capability check; preserving owner override")
-        return False
+    except Exception as exc:
+        await logger.aexception("Authorization API-key scope capability check failed")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "AUTHORIZATION_NOT_READY", "message": "Authorization is not ready."},
+        ) from exc
 
 
 async def should_apply_owner_override() -> bool:
     """Return True when Langflow should apply the built-in owner override."""
+    if get_settings_service().auth_settings.AUTHZ_ENABLED:
+        service = get_authorization_service()
+        if getattr(service, "HANDLES_CANONICAL_OWNERSHIP", False) is True:
+            return False
     return not await _api_key_scopes_require_plugin_enforcement()
 
 
@@ -267,13 +280,18 @@ async def ensure_permission(
     # Fail closed when enforce() raises (deny + audit, not HTTP 500).
     deny_detail = detail if detail is not None else _DEFAULT_DENY_DETAIL
     try:
-        allowed = await authz.enforce(
-            user_id=user.id,
-            domain=domain,
-            obj=obj,
-            act=act,
-            context=merged_context,
-        )
+        from contextlib import nullcontext
+
+        from lfx.services.authorization.context import authorization_session
+
+        with authorization_session(audit_session) if audit_session is not None else nullcontext():
+            allowed = await authz.enforce(
+                user_id=user.id,
+                domain=domain,
+                obj=obj,
+                act=act,
+                context=merged_context,
+            )
     except Exception as exc:
         logger.exception("Authorization plugin raised during enforce; failing closed")
         await _audit_guard_decision(
@@ -901,6 +919,7 @@ async def ensure_file_permission(
     file_user_id: UUID | None = None,
     workspace_id: UUID | None = None,
     domain: str | None = None,
+    audit_session: AsyncSession | None = None,
 ) -> None:
     """Check file permission (owner override, then plugin enforce)."""
     await _ensure_typed(
@@ -913,6 +932,7 @@ async def ensure_file_permission(
             "workspace_id": workspace_id,
         },
         domain_override=domain,
+        audit_session=audit_session,
     )
 
 

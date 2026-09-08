@@ -381,13 +381,16 @@ jobs:
           prune-cache: false
 
       - name: Install credential-free backend test dependencies
-        run: uv sync --group dev --package langflow-base --extra postgresql
+        run: |
+          uv sync --locked --group dev --package langflow --package langflow-base --extra postgresql --extra authorization
+          uv run --no-sync python -c "from importlib.metadata import version; print('Authorization dependency: casbin==' + version('casbin'))"
 
-      - name: Run native authorization migration, transaction, lifecycle, and API tests
+      - name: Run registered authorization migration, transaction, lifecycle, and API tests
         env:
           MIGRATION_VALIDATION_CI: "true"
         run: >-
-          uv run pytest
+          uv run --no-sync pytest
+          src/backend/tests/unit/services/authorization/casbin_spec
           src/backend/tests/unit/alembic/test_authz_team_sharing_migration.py
           src/backend/tests/unit/services/authorization/test_collaboration_management.py
           src/backend/tests/unit/api/v1/test_authz_lifecycle_contract.py
@@ -694,7 +697,7 @@ jobs:
                 elif $job == "test-backend" then
                   "  - Backend Tests: Check Python code, tests, and dependencies"
                 elif $job == "test-authz-backend" then
-                  "  - Team Sharing Backend Tests: Check the native enforcer, migrations, lifecycle, and database transactions"
+                  "  - Team Sharing Backend Tests: Check the registered enforcer, migrations, lifecycle, and database transactions"
                 elif $job == "test-frontend-unit" then
                   "  - Frontend Unit Tests: Check React components and unit test logic"
                 elif $job == "test-frontend" then

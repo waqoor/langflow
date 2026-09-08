@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
@@ -31,6 +33,8 @@ from langflow.services.auth.context import (
 from langflow.services.deps import get_settings_service
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from lfx.services.authorization import AuthorizationPrincipal
     from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -65,6 +69,28 @@ _AUDIT_BATCH_MAX = 100
 
 # Minimum seconds between drop warnings while saturation persists.
 _AUDIT_DROP_WARN_INTERVAL = 10.0
+_admission_audits: ContextVar[tuple[asyncio.Task[Any] | None, list[dict[str, Any]]] | None] = ContextVar(
+    "langflow.authz.admission_audits",
+    default=None,
+)
+
+
+@asynccontextmanager
+async def defer_admission_audits() -> AsyncIterator[None]:
+    """Submit decision audits after the enclosing authorization snapshot closes.
+
+    Durable audit cannot wait on an independent SQLite writer while admission
+    still holds a read transaction. Mutation audits use their caller's session
+    and never enter this queue.
+    """
+    pending: list[dict[str, Any]] = []
+    token = _admission_audits.set((asyncio.current_task(), pending))
+    try:
+        yield
+    finally:
+        _admission_audits.reset(token)
+        for arguments in pending:
+            await audit_decision(**arguments)
 
 
 class AuditPersistenceError(RuntimeError):
@@ -663,6 +689,22 @@ async def audit_decision(
     # defaults to ``False`` (see lfx/services/settings/auth.py) because the
     # background writer still consumes a DB connection; operators opt in.
     if not getattr(auth_settings, "AUTHZ_AUDIT_ENABLED", False):
+        return
+
+    deferred = _admission_audits.get()
+    if deferred is not None and deferred[0] is asyncio.current_task():
+        if len(deferred[1]) >= _AUDIT_QUEUE_MAX:
+            raise AuditPersistenceError
+        deferred[1].append(
+            {
+                "user_id": user_id,
+                "principal": principal,
+                "action": action,
+                "obj": obj,
+                "result": result,
+                "details": details,
+            }
+        )
         return
 
     durable = bool(getattr(auth_settings, "AUTHZ_AUDIT_DURABLE", False))

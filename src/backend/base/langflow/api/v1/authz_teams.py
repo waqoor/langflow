@@ -25,13 +25,14 @@ from langflow.services.authorization.collaboration import (
     CollaborationCapabilityError,
     discover_collaboration_capabilities,
 )
+from langflow.services.authorization.fetch import authorization_admission
 from langflow.services.authorization.lifecycle import safe_identity_mutation_committed
 from langflow.services.authorization.team_management import (
     MemberUpsert,
     TeamManagementError,
     TeamPatch,
     actor_can_administer_platform,
-    team_actor_capabilities_for_role,
+    team_actor_capabilities_many,
 )
 from langflow.services.authorization.team_management import (
     add_member as add_member_transaction,
@@ -103,20 +104,15 @@ async def _require_collaboration_ready() -> None:
 
 
 async def _current_actor(session: DbSession, user_id: UUID) -> User:
-    actor = await session.get(User, user_id)
+    actor = await session.get(User, user_id, populate_existing=True)
     if actor is None or actor.is_active is not True:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
     return actor
 
 
 async def _team_visible(session: DbSession, *, team_id: UUID, user: User) -> bool:
-    if actor_can_administer_platform(user):
-        return True
-    statement = select(AuthzTeamMember.id).where(
-        AuthzTeamMember.team_id == team_id,
-        AuthzTeamMember.user_id == user.id,
-    )
-    return (await session.exec(statement)).first() is not None
+    async with authorization_admission(session):
+        return await get_authorization_service().enforce(user_id=user.id, domain="*", obj=f"team:{team_id}", act="read")
 
 
 async def _serialize_team(session: DbSession, team: AuthzTeam, actor: User) -> TeamRead:
@@ -151,11 +147,11 @@ async def _serialize_teams(session: DbSession, teams: list[AuthzTeam], actor: Us
     for member in members:
         by_team.setdefault(member.team_id, []).append(member)
 
+    capability_by_team = await team_actor_capabilities_many(session, actor=actor, team_ids=team_ids)
     serialized: list[TeamRead] = []
     for team in teams:
         roster = by_team.get(team.id, [])
-        actor_role = next((member.role for member in roster if member.user_id == actor.id), None)
-        capabilities = team_actor_capabilities_for_role(actor=actor, role=actor_role)
+        capabilities = capability_by_team[team.id]
         serialized.append(
             TeamRead(
                 **team.model_dump(),
@@ -213,33 +209,56 @@ async def list_teams(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[TeamRead]:
     """List a bounded caller-authorized team view."""
-    actor = await _current_actor(session, current_user.id)
-    statement = select(AuthzTeam)
-    if view == "all":
-        if not actor_can_administer_platform(actor):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Platform Admin required")
-    elif view in {"member", "managed"}:
-        statement = statement.join(
-            AuthzTeamMember,
-            col(AuthzTeamMember.team_id) == col(AuthzTeam.id),
-        ).where(AuthzTeamMember.user_id == actor.id)
-        if view == "managed":
-            statement = statement.where(col(AuthzTeamMember.role).in_(("admin", "maintainer")))
-    elif view == "directory":
-        statement = statement.where(AuthzTeam.is_active == True)  # noqa: E712
+    async with authorization_admission(session) as admission:
+        actor = await _current_actor(admission, current_user.id)
+        statement = select(AuthzTeam)
+        if view == "all":
+            if not actor_can_administer_platform(actor):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Platform Admin required")
+        elif view in {"member", "managed"}:
+            statement = statement.join(
+                AuthzTeamMember,
+                col(AuthzTeamMember.team_id) == col(AuthzTeam.id),
+            ).where(AuthzTeamMember.user_id == actor.id)
+            if view == "managed":
+                statement = statement.where(col(AuthzTeamMember.role).in_(("admin", "maintainer")))
+        elif view == "directory":
+            statement = statement.where(AuthzTeam.is_active == True)  # noqa: E712
 
-    if search:
-        normalized = search.strip()
-        if normalized:
-            like = f"%{escape_like_pattern(normalized)}%"
-            statement = statement.where(
-                col(AuthzTeam.team_name).ilike(like, escape="\\") | col(AuthzTeam.adom_name).ilike(like, escape="\\")
-            )
-    if is_active is not None:
-        statement = statement.where(AuthzTeam.is_active == is_active)
-    statement = statement.order_by(col(AuthzTeam.team_name), col(AuthzTeam.id)).offset(offset).limit(limit)
-    teams = list((await session.exec(statement)).all())
-    return await _serialize_teams(session, teams, actor)
+        if search:
+            normalized = search.strip()
+            if normalized:
+                like = f"%{escape_like_pattern(normalized)}%"
+                statement = statement.where(
+                    col(AuthzTeam.team_name).ilike(like, escape="\\")
+                    | col(AuthzTeam.adom_name).ilike(like, escape="\\")
+                )
+        if is_active is not None:
+            statement = statement.where(AuthzTeam.is_active == is_active)
+        statement = statement.order_by(col(AuthzTeam.team_name), col(AuthzTeam.id))
+        if view in {"member", "managed"}:
+            # Membership narrows the requested view; the engine still decides
+            # visibility before the caller's offset and limit are applied.
+            teams: list[AuthzTeam] = []
+            scanned = visible = 0
+            while len(teams) < limit:
+                candidates = list((await admission.exec(statement.offset(scanned).limit(_LIST_MAX_LIMIT))).all())
+                if not candidates:
+                    break
+                decisions = await get_authorization_service().batch_enforce(
+                    user_id=actor.id, domain="*", requests=tuple((f"team:{team.id}", "read") for team in candidates)
+                )
+                for team, allowed in zip(candidates, decisions, strict=True):
+                    if allowed:
+                        if visible >= offset:
+                            teams.append(team)
+                        visible += 1
+                        if len(teams) == limit:
+                            break
+                scanned += len(candidates)
+        else:
+            teams = list((await admission.exec(statement.offset(offset).limit(limit))).all())
+        return await _serialize_teams(admission, teams, actor)
 
 
 @router.get("/{team_id}", response_model=TeamRead)
@@ -248,11 +267,12 @@ async def read_team(
     session: DbSession,
     current_user: CurrentActiveUser,
 ) -> TeamRead:
-    actor = await _current_actor(session, current_user.id)
-    team = await session.get(AuthzTeam, team_id)
-    if team is None or not await _team_visible(session, team_id=team_id, user=actor):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
-    return await _serialize_team(session, team, actor)
+    async with authorization_admission(session) as admission:
+        actor = await _current_actor(admission, current_user.id)
+        team = await admission.get(AuthzTeam, team_id)
+        if team is None or not await _team_visible(admission, team_id=team_id, user=actor):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
+        return await _serialize_team(admission, team, actor)
 
 
 @router.post(
@@ -373,19 +393,20 @@ async def list_members(
     limit: Annotated[int, Query(ge=1, le=_LIST_MAX_LIMIT)] = _LIST_DEFAULT_LIMIT,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[TeamMemberRead]:
-    actor = await _current_actor(session, current_user.id)
-    team = await session.get(AuthzTeam, team_id)
-    if team is None or not await _team_visible(session, team_id=team_id, user=actor):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
-    statement = (
-        select(AuthzTeamMember)
-        .where(AuthzTeamMember.team_id == team_id)
-        .order_by(col(AuthzTeamMember.created_at), col(AuthzTeamMember.user_id))
-        .offset(offset)
-        .limit(limit)
-    )
-    members = list((await session.exec(statement)).all())
-    return await _serialize_members(session, members)
+    async with authorization_admission(session) as admission:
+        actor = await _current_actor(admission, current_user.id)
+        team = await admission.get(AuthzTeam, team_id)
+        if team is None or not await _team_visible(admission, team_id=team_id, user=actor):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
+        statement = (
+            select(AuthzTeamMember)
+            .where(AuthzTeamMember.team_id == team_id)
+            .order_by(col(AuthzTeamMember.created_at), col(AuthzTeamMember.user_id))
+            .offset(offset)
+            .limit(limit)
+        )
+        members = list((await admission.exec(statement)).all())
+        return await _serialize_members(admission, members)
 
 
 @router.post("/{team_id}/members", response_model=TeamMemberRead, status_code=status.HTTP_201_CREATED)

@@ -593,6 +593,16 @@ async def client_fixture(
             monkeypatch.setenv("LANGFLOW_SUPERUSER", "langflow")
             monkeypatch.setenv("LANGFLOW_SUPERUSER_PASSWORD", "test-superuser-password")
             monkeypatch.setenv("DO_NOT_TRACK", "true")
+            if "casbin_authorization" in request.fixturenames:
+                config_dir = Path(db_dir) / "authorization-config"
+                config_dir.mkdir()
+                (config_dir / "lfx.toml").write_text(
+                    "[services]\nauthorization_service = "
+                    '"langflow.services.authorization.casbin.service:CasbinAuthorizationService"\n',
+                    encoding="utf-8",
+                )
+                monkeypatch.setenv("LANGFLOW_CONFIG_DIR", str(config_dir))
+                monkeypatch.setenv("LANGFLOW_AUTHZ_ENABLED", "true")
             if "load_flows" in request.keywords:
                 shutil.copyfile(
                     pytest.BASIC_EXAMPLE_PATH, Path(load_flows_dir) / "c54f9130-f2fa-4a3e-b22a-3856d946351b.json"
@@ -601,9 +611,12 @@ async def client_fixture(
                 monkeypatch.setenv("LANGFLOW_AUTO_LOGIN", "true")
             # Clear the services cache
             from lfx.services.manager import get_service_manager
+            from lfx.services.schema import ServiceType
 
+            get_service_manager().service_classes.pop(ServiceType.AUTHORIZATION_SERVICE, None)
             get_service_manager().factories.clear()
             get_service_manager().services.clear()  # Clear the services cache
+            get_service_manager()._plugins_discovered = False  # Re-read this test's explicit registration.
             app = create_app()
             db_service = get_db_service()
             db_service.database_url = database_url

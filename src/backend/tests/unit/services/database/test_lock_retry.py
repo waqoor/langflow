@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 from langflow.services.database.lock_retry import (
     RetryableTransactionError,
+    TransactionRepairError,
     is_database_lock_error,
     run_with_lock_retry,
     sanitize_database_error,
@@ -20,6 +21,43 @@ class RecordingSession:
 
     async def rollback(self):
         self.rollbacks += 1
+
+
+async def test_external_repair_runs_after_rollback_and_only_once():
+    """A provider repair cannot retain the failed write's transaction or repeat indefinitely."""
+    session = RecordingSession()
+    repairs = []
+    cause = ValueError("still deployed")
+
+    async def repair():
+        assert session.rollbacks == 1
+        repairs.append("repaired")
+
+    async def operation(_attempt):
+        raise TransactionRepairError(key="deployment", repair=repair, cause=cause)
+
+    with pytest.raises(ValueError, match="still deployed"):
+        await run_with_lock_retry(operation, session=session, description="deployment repair")
+    assert repairs == ["repaired"]
+
+
+async def test_exhausted_repair_preserves_the_original_guard_error():
+    """The API must receive its guard error when there is no retry left."""
+    session = RecordingSession()
+    cause = ValueError("still deployed")
+
+    async def repair():
+        pytest.fail("No external repair is needed when the retry budget is exhausted")
+
+    async def operation(_attempt):
+        raise TransactionRepairError(key="deployment", repair=repair, cause=cause)
+
+    with pytest.raises(ValueError, match="still deployed"):
+        await run_with_lock_retry(operation, session=session, description="exhausted repair", attempts=1)
+
+
+def test_explicit_writer_restart_uses_the_existing_lock_error_response():
+    assert is_database_lock_error(RetryableTransactionError())
 
 
 def make_lock_error(errorname: str = "SQLITE_BUSY_SNAPSHOT") -> OperationalError:

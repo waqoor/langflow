@@ -108,9 +108,10 @@ class _RecordingLogger:
 
 
 @pytest.mark.anyio
-async def test_native_service_does_not_report_pass_through_when_authz_enabled(monkeypatch):
-    """The fork's enabled service is a native enforcer, never an OSS allow-all stub."""
+async def test_casbin_service_does_not_report_pass_through_when_authz_enabled(monkeypatch):
+    """The selected enforcer stays unready until its canonical projection is loaded."""
     from langflow.services.authorization import service as authz_service_module
+    from langflow.services.authorization.casbin.service import CasbinAuthorizationService
 
     recorder = _RecordingLogger()
     monkeypatch.setattr(authz_service_module, "logger", recorder)
@@ -121,12 +122,12 @@ async def test_native_service_does_not_report_pass_through_when_authz_enabled(mo
             AUTHZ_SUPERUSER_BYPASS=True,
         )
     )
-    LangflowAuthorizationService(settings)
+    service = CasbinAuthorizationService(settings)
 
     warning_messages = [msg for level, msg in recorder.calls if level == "warning"]
-    debug_messages = [msg for level, msg in recorder.calls if level == "debug"]
     assert not any("pass-through" in msg.lower() for msg in warning_messages)
-    assert any("Native Langflow authorization service initialized" in msg for msg in debug_messages)
+    assert await service.is_enabled() is True
+    assert service.ready is False
 
 
 @pytest.mark.anyio

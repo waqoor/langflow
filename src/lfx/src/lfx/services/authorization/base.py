@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import abc
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, TypedDict
@@ -13,7 +14,7 @@ from lfx.services.base import Service
 from lfx.services.schema import ServiceType
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncIterator, Sequence
     from datetime import datetime
     from uuid import UUID
 
@@ -139,6 +140,20 @@ class AuthorizationMutationKind(str, Enum):
     TEAM_MEMBER_ROLE_CHANGED = "team_member.role_changed"
     API_KEY_CREATED = "api_key.created"  # pragma: allowlist secret
     API_KEY_DELETED = "api_key.deleted"  # pragma: allowlist secret
+
+
+@dataclass(frozen=True, slots=True)
+class ResourcePolicyMutation:
+    """Immutable canonical resource changes relevant to policy projection.
+
+    Content-only saves do not emit this event. Identifiers describe resources
+    already changed in the caller's transaction; they are never policy input.
+    """
+
+    resource_type: str
+    resource_id: UUID
+    changed_fields: tuple[str, ...] = ()
+    deleted: bool = False
 
 
 class DirectoryMembershipClaimState(str, Enum):
@@ -285,6 +300,16 @@ class ResourceVisibilityScope:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class AuthorizationAccessSource:
+    """Non-secret provenance explaining actions already allowed by the service."""
+
+    kind: str
+    actions: tuple[str, ...]
+    source_id: UUID | None = None
+    label: str | None = None
+
+
 class BaseAuthorizationService(Service, abc.ABC):
     """Abstract base class for authorization (RBAC) services."""
 
@@ -292,6 +317,9 @@ class BaseAuthorizationService(Service, abc.ABC):
 
     # True when the service can authorize non-owner access (share-aware fetch).
     SUPPORTS_CROSS_USER_FETCH: ClassVar[bool] = False
+    # Selected services may resolve active identity and ownership themselves
+    # from the same canonical snapshot as policy. Other plugins retain floors.
+    HANDLES_CANONICAL_OWNERSHIP: ClassVar[bool] = False
     # True when the service honors API-key credential context as a possible
     # restriction on top of the resolved user. When enabled, Langflow lets the
     # plugin evaluate owner-owned resources for API-key requests instead of
@@ -504,6 +532,42 @@ class BaseAuthorizationService(Service, abc.ABC):
 
     async def invalidate_user(self, user_id: UUID) -> None:
         """Drop cached policy for a single user. Plugin override; OSS no-op."""
+
+    @asynccontextmanager
+    async def admission_context(self, *, session: Any = None) -> AsyncIterator[Any]:
+        """Scope related permission and response reads without owning a caller's transaction.
+
+        Implementations may yield a short coherent read session, or reuse an
+        already ordered caller transaction. Defaults preserve existing plugins.
+        Callers must end this context before external execution or decision-audit I/O.
+        """
+        yield session
+
+    async def initialize_authorization(self) -> None:
+        """Initialize selected policy after canonical schema setup; default no-op."""
+
+    async def get_access_sources(
+        self,
+        *,
+        user_id: UUID,
+        resource_type: str,
+        resource_id: UUID,
+    ) -> tuple[AuthorizationAccessSource, ...]:
+        """Explain selected-service decisions; plugins without provenance return none."""
+        _ = (user_id, resource_type, resource_id)
+        return ()
+
+    async def acquire_share_mutation_lock(self, *, session: Any) -> None:
+        """Lock-only preflight before share, recipient and resource reads; no commit."""
+
+    async def stage_share_mutation(self, *, session: Any, snapshot: ShareRuleSnapshot) -> None:
+        """Stage derived policy after a canonical share write in the caller's transaction."""
+
+    async def acquire_resource_mutation_lock(self, *, session: Any) -> None:
+        """Lock-only preflight before policy-relevant resource reads; no commit."""
+
+    async def stage_resource_mutation(self, *, session: Any, event: ResourcePolicyMutation) -> None:
+        """Stage a move/scope/deletion projection in the caller's canonical transaction."""
 
     async def invalidate_role(self, role_id: UUID) -> None:
         """Drop cached policy for a single role. Plugin override; OSS no-op."""

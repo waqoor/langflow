@@ -23,6 +23,9 @@ class LockedFlowError(RuntimeError):
 
 async def lock_flow_for_update(session: AsyncSession, flow: Flow) -> None:
     """Refresh *flow* while holding its database row lock until transaction end."""
+    from langflow.services.deps import get_authorization_service
+
+    await get_authorization_service().acquire_resource_mutation_lock(session=session)
     if session.get_bind().dialect.name == "sqlite":
         # SQLite ignores FOR UPDATE. Establish its writer transaction before
         # reading the revision, including when audit staging is disabled.

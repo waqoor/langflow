@@ -128,6 +128,31 @@ async def stage_identity_mutation(
     )
 
 
+async def stage_resource_mutation(
+    session: AsyncSession,
+    *,
+    resource_type: str,
+    resource_id: UUID,
+    changed_fields: tuple[str, ...] = (),
+    deleted: bool = False,
+) -> None:
+    """Stage changed canonical scope after the caller's complete resource mutation."""
+    from lfx.services.authorization.base import ResourcePolicyMutation
+
+    from langflow.services.deps import get_authorization_service
+
+    if changed_fields or deleted:
+        await get_authorization_service().stage_resource_mutation(
+            session=session,
+            event=ResourcePolicyMutation(
+                resource_type,
+                resource_id,
+                changed_fields,
+                deleted,
+            ),
+        )
+
+
 async def safe_identity_mutation_committed(
     service: BaseAuthorizationService,
     mutation: AuthorizationMutation,

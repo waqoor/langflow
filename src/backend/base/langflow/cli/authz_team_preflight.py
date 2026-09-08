@@ -8,7 +8,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path  # noqa: TC003 - Typer resolves this annotation at runtime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID
 
 import typer
@@ -213,6 +213,10 @@ async def repair_teams(
     instructions: tuple[TeamRepairInstruction, ...],
 ) -> tuple[int, tuple[AuthorizationMutation, ...]]:
     """Validate the complete mapping, then apply it in one transaction."""
+    await get_authorization_service().acquire_identity_mutation_lock(
+        session=session,
+        kind=AuthorizationMutationKind.TEAM_UPDATED,
+    )
     validated: list[tuple[TeamRepairInstruction, AuthzTeam, AuthzTeamMember | None]] = []
     for instruction in sorted(instructions, key=lambda item: str(item.team_id)):
         team = await session.get(AuthzTeam, instruction.team_id)
@@ -308,7 +312,6 @@ async def repair_teams(
                     previous_identifier=previous_role,
                 )
                 events.append(role_event)
-                await stage_identity_mutation(service, session, role_event)
                 stage_mutation_audit(
                     session=session,
                     user_id=None,
@@ -336,8 +339,9 @@ async def repair_teams(
                 details={"admin_user_id": str(member.user_id), "reason": "legacy_repair"},
             )
         events.append(event)
-        await stage_identity_mutation(service, session, event)
     await session.flush()
+    for event in events:
+        await stage_identity_mutation(service, session, event)
     return len(validated), tuple(events)
 
 
@@ -363,7 +367,12 @@ async def _run_repair(mapping_file: Path) -> tuple[int, TeamConsistencyReport]:
     service = get_authorization_service()
     async with session_scope() as session:
         try:
-            repaired, events = await repair_teams(session, instructions)
+            from langflow.services.database.lock_retry import run_with_lock_retry
+
+            async def operation(_attempt: int):
+                return await repair_teams(session, instructions)
+
+            repaired, events = await run_with_lock_retry(operation, session=session, description="repair legacy teams")
             await session.commit()
         except Exception:
             await session.rollback()
@@ -389,6 +398,66 @@ def teams_repair(
     typer.echo(json.dumps(output, indent=2, sort_keys=True))
     if not report.valid:
         raise typer.Exit(code=1)
+
+
+async def _policy_operation(*, rebuild: bool, replace_existing: bool = False) -> dict[str, int | bool]:
+    # Optional imports stay behind the explicit operator command; ordinary
+    # Langflow/LFX installations do not need or import the policy dependency.
+    from langflow.services.authorization.casbin import store
+    from langflow.services.authorization.casbin.service import CasbinAuthorizationService
+    from langflow.services.database.lock_retry import run_with_lock_retry
+
+    await initialize_services(skip_superuser_setup=True, skip_authorization_readiness=True)
+    if not isinstance(get_authorization_service(), CasbinAuthorizationService):
+        msg = "Register the Casbin authorization service before checking or rebuilding its projection."
+        raise TypeError(msg)
+    if not rebuild:
+        async with store.read_snapshot() as session:
+            return await store.verify_projection(session)
+    async with session_scope() as session:
+
+        async def operation(_attempt: int) -> dict[str, int | bool]:
+            await store.acquire_writer_lock(session)
+            before = await store.verify_projection(session)
+            if (before["unexpected"] or before["invalid"]) and not replace_existing:
+                msg = (
+                    "Existing policy cannot be replaced implicitly. "
+                    "Verify canonical state, then use --replace-existing."
+                )
+                raise ValueError(msg)
+            wanted = store.compile_policy(await store.canonical_snapshot(session, validate_teams=True))
+            result = await store.reconcile_rules(session, wanted, replace_invalid=replace_existing)
+            store.enforcer_for(wanted)
+            stage_mutation_audit(
+                session=session,
+                user_id=None,
+                action="authorization:rebuild",
+                obj="authorization:*",
+                details={"inserted": result.inserted, "deleted": result.deleted, "total": result.total},
+            )
+            return {"valid": True, "inserted": result.inserted, "deleted": result.deleted, "total": result.total}
+
+        return await run_with_lock_retry(operation, session=session, description="rebuild authorization policy")
+
+
+@authz_app.command("policy-check")
+def policy_check() -> None:
+    """Verify canonical policy against the selected service's derived projection."""
+    report = asyncio.run(_policy_operation(rebuild=False))
+    typer.echo(json.dumps(report, sort_keys=True))
+    if not report["valid"]:
+        raise typer.Exit(code=1)
+
+
+@authz_app.command("policy-rebuild")
+def policy_rebuild(*, replace_existing: Annotated[bool, typer.Option("--replace-existing")] = False) -> None:
+    """Reconcile canonical policy atomically; explicitly authorize foreign-policy replacement."""
+    try:
+        report = asyncio.run(_policy_operation(rebuild=True, replace_existing=replace_existing))
+    except (TypeError, ValueError) as exc:
+        typer.echo(f"Rebuild rejected: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(json.dumps(report, sort_keys=True))
 
 
 __all__ = [

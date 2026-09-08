@@ -35,6 +35,7 @@ from langflow.services.authorization.concurrency import (
     require_revision_precondition,
 )
 from langflow.services.authorization.fetch import authorized_or_owner_scoped
+from langflow.services.authorization.lifecycle import stage_resource_mutation
 from langflow.services.authorization.team_management import actor_can_administer_platform
 from langflow.services.database.models.base import orjson_dumps
 from langflow.services.database.models.deployment.orm_guards import ensure_flow_move_allowed
@@ -763,6 +764,16 @@ async def _update_existing_flow(
     existing_flow.updated_at = datetime.now(timezone.utc)
     session.add(existing_flow)
     await session.flush()
+    await stage_resource_mutation(
+        session,
+        resource_type="flow",
+        resource_id=existing_flow.id,
+        changed_fields=tuple(
+            field
+            for field in ("folder_id", "workspace_id")
+            if revision_snapshot[field] != getattr(existing_flow, field)
+        ),
+    )
     await session.refresh(existing_flow)
     # Writes happen under the owner's storage namespace, not the actor's.
     await _save_flow_to_fs(existing_flow, owner_user_id, storage_service)
@@ -903,6 +914,14 @@ async def _patch_flow(
     db_flow.updated_at = datetime.now(timezone.utc)
     session.add(db_flow)
     await session.flush()
+    await stage_resource_mutation(
+        session,
+        resource_type="flow",
+        resource_id=db_flow.id,
+        changed_fields=tuple(
+            field for field in ("folder_id", "workspace_id") if revision_snapshot[field] != getattr(db_flow, field)
+        ),
+    )
     await session.refresh(db_flow)
     # Writes happen under the owner's storage namespace, not the actor's.
     await _save_flow_to_fs(db_flow, owner_user_id, storage_service)

@@ -2067,7 +2067,7 @@ async def test_list_roles_passes_limit_offset_to_query(stub_authz):
 
 
 @pytest.mark.asyncio
-async def test_list_teams_passes_limit_offset_to_query(stub_authz):
+async def test_list_directory_teams_passes_limit_offset_to_query(stub_authz):
     from langflow.api.v1 import authz_teams
 
     stub_authz()
@@ -2084,6 +2084,7 @@ async def test_list_teams_passes_limit_offset_to_query(stub_authz):
     await authz_teams.list_teams(
         session=session,
         current_user=user,
+        view="directory",
         limit=10,
         offset=200,
     )

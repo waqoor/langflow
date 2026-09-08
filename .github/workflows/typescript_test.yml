@@ -40,7 +40,7 @@ on:
         type: string
         default: "ubuntu-latest"
       authz-mode:
-        description: "Run the isolated native-authorization acceptance suite."
+        description: "Run the isolated registered-authorization acceptance suite."
         required: false
         type: boolean
         default: false
@@ -86,7 +86,7 @@ on:
           - '["self-hosted", "linux", "ARM64", "langflow-ai-arm64-40gb-ephemeral"]'
         default: ubuntu-latest
       authz-mode:
-        description: "Run the isolated native-authorization acceptance suite."
+        description: "Run the isolated registered-authorization acceptance suite."
         required: false
         type: boolean
         default: false
@@ -425,7 +425,14 @@ jobs:
           prune-cache: false
 
       - name: Install Python Dependencies
-        run: uv sync --extra audio
+        shell: bash
+        run: |
+          if [[ "$LANGFLOW_E2E_AUTHZ" == "true" ]]; then
+            uv sync --locked --package langflow --package langflow-base --extra audio --extra authorization
+            uv run --no-sync python -c "from importlib.metadata import version; print('Authorization dependency: casbin==' + version('casbin'))"
+          else
+            uv sync --extra audio
+          fi
 
       # The backend spawns `uvx --with mcp~=1.28 mcp-proxy ...` for the
       # project MCP server as soon as the UI asks for tool counts

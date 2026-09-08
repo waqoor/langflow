@@ -10,7 +10,6 @@ from sqlmodel import col, or_
 
 from langflow.services.authorization.actions import FlowAction
 from langflow.services.authorization.guards import (
-    _api_key_scopes_require_plugin_enforcement,
     _auth_context,
     _coerce_action,
     should_apply_owner_override,
@@ -60,7 +59,7 @@ async def filter_visible_resources(
     authz = get_authorization_service()
     act_str = _coerce_action(act)
     user_id = getattr(user, "id", None)
-    owner_override_enabled = not await _api_key_scopes_require_plugin_enforcement()
+    owner_override_enabled = await should_apply_owner_override()
 
     # Owned rows skip batch_enforce (matches direct-read owner override).
     owned_indices: set[int] = set()

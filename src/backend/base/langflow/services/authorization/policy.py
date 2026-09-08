@@ -121,54 +121,29 @@ def project_flow_actions(permission_level: str) -> frozenset[str]:
     return actions
 
 
-def team_operation_allowed(
+def team_operation_action(
     operation: TeamOperation | str,
     *,
-    actor_is_active: bool,
-    actor_can_administer_platform: bool,
-    actor_role: str | None,
     target_role: str | None = None,
     new_role: str | None = None,
-) -> bool:
-    """Check team-management authority, never workflow access.
-
-    Args:
-        operation: Operation selected by the server, not a client capability.
-        actor_is_active: Current canonical user activation state.
-        actor_can_administer_platform: Platform authority after applicable
-            credential ceilings and administrative policy have been evaluated.
-        actor_role: Canonical membership role for this exact team, or None.
-        target_role: Current canonical role of a member being changed/removed.
-        new_role: Requested role for an add or role-change operation.
-
-    Returns:
-        Whether role-based authority permits the operation. Source ownership,
-        final-roster invariants, and locks remain mandatory mutation checks.
-    """
-    if actor_is_active is not True:
-        return False
+) -> str | None:
+    """Classify a validated canonical operation; the service decides authority."""
     try:
         resolved = TeamOperation(operation)
     except ValueError:
-        return False
+        return None
 
     if resolved in {TeamOperation.ADD_MEMBER, TeamOperation.CHANGE_ROLE} and new_role not in TEAM_ROLES:
-        return False
+        return None
     if resolved in {TeamOperation.REMOVE_MEMBER, TeamOperation.CHANGE_ROLE} and target_role not in TEAM_ROLES:
-        return False
-    if actor_can_administer_platform is True:
-        return True
-    if actor_role not in TEAM_ROLES:
-        return False
-    if resolved is TeamOperation.READ:
-        return True
-    if resolved in {TeamOperation.UPDATE, TeamOperation.CHANGE_ROLE}:
-        return actor_role == "admin"
+        return None
     if resolved is TeamOperation.ADD_MEMBER:
-        return actor_role == "admin" or (actor_role == "maintainer" and new_role == "user")
+        return f"add_member:{new_role}"
     if resolved is TeamOperation.REMOVE_MEMBER:
-        return actor_role == "admin" or (actor_role == "maintainer" and target_role == "user")
-    return False
+        return f"remove_member:{target_role}"
+    if resolved is TeamOperation.CHANGE_ROLE:
+        return f"change_role:{target_role}:{new_role}"
+    return resolved.value
 
 
 def validate_team_roster(members: Sequence[TeamMemberState], *, team_is_active: bool) -> TeamRosterCounts:

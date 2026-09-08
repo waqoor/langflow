@@ -197,6 +197,8 @@ Repository = "https://github.com/langflow-ai/langflow"
 Documentation = "https://docs.langflow.org"
 # Optional dependencies
 [project.optional-dependencies]
+authorization = ["casbin>=1.43.0,<1.44.0"]
+
 audio = [
     "openai>=1.68.2,<3.0.0",
     "webrtcvad>=2.0.10",

@@ -2,22 +2,50 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, TypeVar
 
 from fastapi import HTTPException, status
+from lfx.log.logger import logger
 from sqlalchemy import update
 from sqlmodel import select
 
 from langflow.services.deps import get_authorization_service
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
     from uuid import UUID
 
     from sqlalchemy.orm.attributes import InstrumentedAttribute
     from sqlmodel.ext.asyncio.session import AsyncSession
 
+    from langflow.services.database.models.user.model import UserRead
+
 T = TypeVar("T")
+
+
+@asynccontextmanager
+async def authorization_admission(session: AsyncSession) -> AsyncIterator[AsyncSession]:
+    """Keep canonical response data and policy reads in one short admission."""
+    try:
+        async with get_authorization_service().admission_context(session=session) as admission:
+            yield admission
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await logger.aerror("Authorization admission unavailable: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Authorization service unavailable.") from exc
+
+
+async def load_mutation_actor(session: AsyncSession, user_id: UUID) -> UserRead:
+    """Reload canonical authority after the caller acquires its mutation lock."""
+    from langflow.services.authorization.repository import load_active_user
+    from langflow.services.database.models.user.model import UserRead
+
+    actor = await load_active_user(session, user_id)
+    if actor is None:
+        raise HTTPException(status_code=401, detail="Inactive or unknown user.")
+    return UserRead.model_validate(actor, from_attributes=True)
 
 
 async def authorized_or_owner_scoped(
@@ -37,6 +65,8 @@ async def authorized_or_owner_scoped(
     this to keep authorization of the current scope atomic with the mutation.
     """
     authz = get_authorization_service()
+    if for_update:
+        await authz.acquire_resource_mutation_lock(session=session)
     # Require both plugin capability and AUTHZ_ENABLED before widening the query.
     predicates = [id_column == resource_id]
     if not (await authz.supports_cross_user_fetch() and await authz.is_enabled()):

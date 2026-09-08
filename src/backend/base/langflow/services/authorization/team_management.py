@@ -7,22 +7,24 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from lfx.services.authorization import AuthorizationMutation, AuthorizationMutationKind, ShareRuleSnapshot
+from lfx.services.authorization.context import authorization_session
 from sqlalchemy import delete, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 
 from langflow.services.authorization.access_ceiling import (
     EXTERNAL_ACCESS_ADMIN,
+    external_access_allows,
     get_current_external_access_context,
 )
 from langflow.services.authorization.audit import stage_mutation_audit
-from langflow.services.authorization.lifecycle import stage_identity_mutation
+from langflow.services.authorization.lifecycle import acquire_identity_mutation_lock, stage_identity_mutation
 from langflow.services.authorization.policy import (
     TeamMemberState,
     TeamOperation,
     TeamRosterCounts,
     TeamRosterError,
-    team_operation_allowed,
+    team_operation_action,
     validate_team_roster,
 )
 from langflow.services.database.lock_retry import RetryableTransactionError
@@ -216,6 +218,9 @@ async def _lock_team_state(
     the roster before the ordered locks were complete, the whole transaction
     is rolled back and replayed against a fresh hint.
     """
+    await acquire_identity_mutation_lock(
+        get_authorization_service(), session, kind=AuthorizationMutationKind.TEAM_UPDATED, entity_id=team_id
+    )
     sqlite_team: AuthzTeam | None = None
     if session.get_bind().dialect.name == "sqlite":
         # SQLite has one database-wide writer and ignores row-lock ordering.
@@ -307,8 +312,7 @@ async def team_actor_capabilities(
     actor: User,
     team_id: UUID,
 ) -> TeamActorCapabilities:
-    role = await _actor_role(session, actor_id=actor.id, team_id=team_id)
-    return team_actor_capabilities_for_role(actor=actor, role=role)
+    return (await team_actor_capabilities_many(session, actor=actor, team_ids=(team_id,)))[team_id]
 
 
 def actor_can_administer_platform(actor: User | UserRead) -> bool:
@@ -323,40 +327,52 @@ def actor_can_administer_platform(actor: User | UserRead) -> bool:
     return bypass and (external is None or external.level == EXTERNAL_ACCESS_ADMIN)
 
 
-def team_actor_capabilities_for_role(*, actor: User, role: str | None) -> TeamActorCapabilities:
-    """Derive capabilities from an already batched canonical membership role."""
-    platform = actor_can_administer_platform(actor)
-    active = actor.is_active is True
-
-    def allows(
-        operation: TeamOperation,
-        *,
-        target_role: str | None = None,
-        new_role: str | None = None,
-    ) -> bool:
-        return team_operation_allowed(
-            operation,
-            actor_is_active=active,
-            actor_can_administer_platform=platform,
-            actor_role=role,
-            target_role=target_role,
-            new_role=new_role,
-        )
-
-    return TeamActorCapabilities(
-        current_user_role=role,
-        can_update=allows(TeamOperation.UPDATE),
-        can_set_active=platform and active,
-        can_delete=platform and active,
-        can_add_user_member=allows(TeamOperation.ADD_MEMBER, new_role=TeamRole.USER.value),
-        can_add_privileged_member=allows(TeamOperation.ADD_MEMBER, new_role=TeamRole.ADMIN.value),
-        can_change_roles=allows(
-            TeamOperation.CHANGE_ROLE,
-            target_role=TeamRole.USER.value,
-            new_role=TeamRole.MAINTAINER.value,
-        ),
-        can_remove_user_member=allows(TeamOperation.REMOVE_MEMBER, target_role=TeamRole.USER.value),
+async def team_actor_capabilities_many(
+    session: AsyncSession,
+    *,
+    actor: User,
+    team_ids: Sequence[UUID],
+) -> dict[UUID, TeamActorCapabilities]:
+    """Batch exact-team probes through the same service that authorizes mutations."""
+    actions = (
+        "update",
+        "set_active",
+        "delete",
+        "add_member:user",
+        "add_member:admin",
+        "change_role:user:maintainer",
+        "remove_member:user",
     )
+    service = get_authorization_service()
+    async with service.admission_context(session=session) as snapshot:
+        roles = dict(
+            (
+                await snapshot.exec(
+                    select(AuthzTeamMember.team_id, AuthzTeamMember.role).where(
+                        AuthzTeamMember.user_id == actor.id, col(AuthzTeamMember.team_id).in_(team_ids)
+                    )
+                )
+            ).all()
+        )
+        with authorization_session(snapshot, admission=True):
+            decisions = await service.batch_enforce(
+                user_id=actor.id,
+                domain="*",
+                requests=tuple((f"team:{team_id}", action) for team_id in team_ids for action in actions),
+            )
+    if len(decisions) != len(team_ids) * len(actions):
+        msg = "Authorization service returned an invalid team capability batch."
+        raise RuntimeError(msg)
+    return {
+        team_id: TeamActorCapabilities(
+            roles.get(team_id),
+            *(
+                allowed and external_access_allows("write")
+                for allowed in decisions[index * len(actions) : (index + 1) * len(actions)]
+            ),
+        )
+        for index, team_id in enumerate(team_ids)
+    }
 
 
 async def require_team_operation(
@@ -368,16 +384,13 @@ async def require_team_operation(
     target_role: str | None = None,
     new_role: str | None = None,
 ) -> None:
-    role = await _actor_role(session, actor_id=actor.id, team_id=team_id)
-    if team_operation_allowed(
-        operation,
-        actor_is_active=actor.is_active is True,
-        actor_can_administer_platform=actor_can_administer_platform(actor),
-        actor_role=role,
-        target_role=target_role,
-        new_role=new_role,
-    ):
-        return
+    action = team_operation_action(operation, target_role=target_role, new_role=new_role)
+    if action is not None:
+        with authorization_session(session):
+            if await get_authorization_service().enforce(
+                user_id=actor.id, domain="*", obj=f"team:{team_id}", act=action
+            ):
+                return
     raise _error(403, "TEAM_OPERATION_FORBIDDEN", "You cannot perform this operation on the team.")
 
 
@@ -410,6 +423,10 @@ async def create_team(
     is_active: bool,
     members: Sequence[MemberUpsert],
 ) -> TeamMutationResult:
+    await acquire_identity_mutation_lock(
+        get_authorization_service(), session, kind=AuthorizationMutationKind.TEAM_CREATED
+    )
+    actor = (await _users_by_id(session, (actor.id,)))[actor.id]
     if not actor_can_administer_platform(actor):
         raise _error(403, "TEAM_OPERATION_FORBIDDEN", "Platform Admin authority is required.")
     if not members:
@@ -520,8 +537,11 @@ async def patch_team(
     team, current, users = await _lock_team_state(
         session,
         team_id,
-        additional_user_ids=tuple(upsert_ids) + tuple(remove_ids),
+        additional_user_ids=(actor.id, *upsert_ids, *remove_ids),
     )
+    actor = users.get(actor.id)
+    if actor is None:
+        raise _error(403, "TEAM_OPERATION_FORBIDDEN", "An active caller is required.")
     current_by_user = {member.user_id: member for member in current}
     if set(require_absent_member_ids) & set(current_by_user):
         raise _error(409, "TEAM_MEMBERSHIP_EXISTS", "User is already a member of this team.")
@@ -789,9 +809,12 @@ async def delete_team(
     team_id: UUID,
     reason: str = "manual",
 ) -> AuthorizationMutation:
+    team, members, users = await _lock_team_state(session, team_id, additional_user_ids=(actor.id,))
+    actor = users.get(actor.id)
+    if actor is None:
+        raise _error(403, "TEAM_OPERATION_FORBIDDEN", "An active caller is required.")
     if not actor_can_administer_platform(actor):
         raise _error(403, "TEAM_OPERATION_FORBIDDEN", "Only a Platform Admin may delete a team.")
-    team, members, _users = await _lock_team_state(session, team_id)
     affected = tuple(member.user_id for member in members)
     share_rows = list(
         (

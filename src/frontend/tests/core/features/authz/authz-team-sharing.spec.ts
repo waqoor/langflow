@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type {
   APIResponse,
   Browser,
@@ -7,8 +8,16 @@ import type {
   Response as PlaywrightResponse,
   Route,
 } from "@playwright/test";
+import type {
+  AuthorizationCapabilities,
+  AuthorizationTeam,
+} from "../../../../src/types/authz";
 import { expect, test } from "../../../fixtures";
 import { createActiveUserViaApi } from "../../../utils/auth/manage-users-via-api";
+import {
+  AUTHZ_STARTUP_LOG,
+  assertAuthzStartup,
+} from "../../../utils/authz-e2e-mode.mjs";
 import { TEXTS } from "../../../utils/constants/texts";
 import { TIMEOUTS } from "../../../utils/constants/timeouts";
 import {
@@ -287,7 +296,7 @@ async function shareFromDialog(
   return share;
 }
 
-test.describe("native team and resource sharing", () => {
+test.describe("registered team and resource sharing", () => {
   test.describe.configure({ mode: "serial", retries: 0 });
 
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -323,27 +332,26 @@ test.describe("native team and resource sharing", () => {
   let teamProjectOwnerFlow: ApiFlow;
   let teamProjectMemberFlow: ApiFlow;
 
-  test.beforeAll(async ({ browser }) => {
+  test.beforeAll(async ({ browser }, testInfo) => {
     if (process.env.LANGFLOW_E2E_AUTHZ !== "true") {
       throw new Error(
-        "Authorization journeys require LANGFLOW_E2E_AUTHZ=true and the native-enforcer server configuration.",
+        "Authorization journeys require LANGFLOW_E2E_AUTHZ=true and the registered Casbin server configuration.",
       );
     }
+
+    await testInfo.attach("authorization-service", {
+      body: assertAuthzStartup(readFileSync(AUTHZ_STARTUP_LOG, "utf8")),
+      contentType: "text/plain",
+    });
 
     const adminSession = await login(browser, "langflow", SUPERUSER_PASSWORD);
     contexts.push(adminSession.context);
     adminPage = adminSession.page;
 
-    const capabilities = await responseJson<{
-      enforcement_active: boolean;
-      service_ready: boolean;
-      team_roles_supported: boolean;
-      user_team_sharing_supported: boolean;
-      conditional_writes_required: boolean;
-    }>(
+    const capabilities = await responseJson<AuthorizationCapabilities>(
       await adminPage.request.get("/api/v1/authz/capabilities"),
       200,
-      "read native authorization capabilities",
+      "read registered authorization capabilities",
     );
     expect(capabilities).toMatchObject({
       enforcement_active: true,
@@ -696,6 +704,14 @@ test.describe("native team and resource sharing", () => {
       expect(memberFlows.map((flow) => flow.id)).toEqual(
         expect.arrayContaining([teamProjectOwnerFlow.id, futureOwnerFlow.id]),
       );
+      for (const memberPage of [teamAdminPage, maintainerPage]) {
+        expect((await getFlow(memberPage, teamProjectOwnerFlow.id)).id).toBe(
+          teamProjectOwnerFlow.id,
+        );
+        expect((await getFlow(memberPage, futureOwnerFlow.id)).id).toBe(
+          futureOwnerFlow.id,
+        );
+      }
 
       teamProjectMemberFlow = await createFlow(
         teamUserPage,
@@ -748,6 +764,44 @@ test.describe("native team and resource sharing", () => {
       );
       expect(retainedOwnedFlow.user_id).toBe(teamUser.id);
 
+      // This member has inherited access before the direct grant is added.
+      // Suspending the team must remove only the inherited source.
+      await getFlow(teamAdminPage, teamProjectMemberFlow.id);
+      await createShare(teamUserPage, {
+        resourceType: "flow",
+        resourceId: teamProjectMemberFlow.id,
+        scope: "user",
+        targetId: teamAdmin.id,
+        permission: "execute",
+      });
+
+      await requireStatus(
+        await adminPage.request.patch(`/api/v1/authz/teams/${team.id}`, {
+          data: { is_active: false },
+        }),
+        200,
+        "suspend team",
+      );
+      await requireStatus(
+        await teamAdminPage.request.get(
+          `/api/v1/flows/${teamProjectOwnerFlow.id}`,
+        ),
+        404,
+        "suspended team no longer grants workflow access",
+      );
+      expect((await getFlow(teamAdminPage, teamProjectMemberFlow.id)).id).toBe(
+        teamProjectMemberFlow.id,
+      );
+      const suspendedTeam = await responseJson<AuthorizationTeam>(
+        await teamAdminPage.request.get(`/api/v1/authz/teams/${team.id}`),
+        200,
+        "suspended team retains its admin's management access",
+      );
+      expect(suspendedTeam).toMatchObject({
+        is_active: false,
+        current_user_role: "admin",
+        capabilities: { can_update: true, can_set_active: false },
+      });
       const survivingDirectGrant = await getFlow(directPage, runnableFlow.id);
       expect(survivingDirectGrant.id).toBe(runnableFlow.id);
     },
@@ -771,10 +825,15 @@ test.describe("native team and resource sharing", () => {
       const capturedRoute = new Promise<Route>((resolve) => {
         captureRoute = resolve;
       });
+      const marker = `unsaved-${runId}`;
       let firstPatch = true;
       const routePattern = `**/api/v1/flows/${runnableFlow.id}`;
       await directPage.route(routePattern, async (route) => {
-        if (route.request().method() !== "PATCH" || !firstPatch) {
+        if (
+          route.request().method() !== "PATCH" ||
+          !route.request().postData()?.includes(marker) ||
+          !firstPatch
+        ) {
           await route.continue();
           return;
         }
@@ -784,7 +843,17 @@ test.describe("native team and resource sharing", () => {
         await route.continue();
       });
 
-      const marker = `unsaved-${runId}`;
+      const saves: PlaywrightResponse[] = [];
+      const recordSave = (response: PlaywrightResponse) => {
+        if (
+          response.request().method() === "PATCH" &&
+          new URL(response.url()).pathname ===
+            `/api/v1/flows/${runnableFlow.id}` &&
+          response.request().postData()?.includes(marker)
+        )
+          saves.push(response);
+      };
+      directPage.on("response", recordSave);
       await input.fill(marker);
       await capturedRoute;
       directShare = await updateShare(ownerPage, directShare, "execute");
@@ -792,7 +861,8 @@ test.describe("native team and resource sharing", () => {
         (response) =>
           response.request().method() === "PATCH" &&
           new URL(response.url()).pathname ===
-            `/api/v1/flows/${runnableFlow.id}`,
+            `/api/v1/flows/${runnableFlow.id}` &&
+          response.request().postData()?.includes(marker) === true,
       );
       releasePatch();
       await requireStatus(
@@ -801,6 +871,16 @@ test.describe("native team and resource sharing", () => {
         "save admitted after access downgrade",
       );
       await expect(input).toHaveValue(marker);
+      await flushPendingFlowAutosave(directPage);
+      await expect(input).toBeDisabled({ timeout: TIMEOUTS.standard });
+      expect(saves.map((response) => response.status())).toEqual([403]);
+      expect(
+        JSON.stringify((await getFlow(ownerPage, runnableFlow.id)).data),
+      ).not.toContain(marker);
+      await expect(
+        directPage.getByTestId("user-profile-settings"),
+      ).toBeVisible();
+      directPage.off("response", recordSave);
       await directPage.unroute(routePattern);
     },
   );
@@ -837,6 +917,70 @@ test.describe("native team and resource sharing", () => {
         `collaborator-concurrent-${runId}`,
       ]).toContain(finalFlow.description);
       expect(finalFlow.edit_revision).toBe(current.edit_revision + 1);
+
+      // Keep the actual editor open across a competing write. The API race
+      // above alone cannot prove draft preservation or stopped autosaves.
+      await directPage.goto(`/flow/${runnableFlow.id}`);
+      const input = directPage
+        .getByRole("application", { name: "Text Input node" })
+        .getByTestId("textarea_str_input_value");
+      await expect(input).toBeEnabled({ timeout: TIMEOUTS.standard });
+      await flushPendingFlowAutosave(directPage);
+      const editorVersion = await getFlow(ownerPage, runnableFlow.id);
+      const marker = `stale-editor-${runId}`;
+      let releaseSave!: () => void;
+      let captureSave!: () => void;
+      const saveGate = new Promise<void>((resolve) => {
+        releaseSave = resolve;
+      });
+      const capturedSave = new Promise<void>((resolve) => {
+        captureSave = resolve;
+      });
+      let saveCount = 0;
+      const routePattern = `**/api/v1/flows/${runnableFlow.id}`;
+      await directPage.route(routePattern, async (route) => {
+        if (
+          route.request().method() === "PATCH" &&
+          route.request().postData()?.includes(marker)
+        ) {
+          saveCount++;
+          captureSave();
+          await saveGate;
+        }
+        await route.continue();
+      });
+      await input.fill(marker);
+      await capturedSave;
+      const winner = await responseJson<ApiFlow>(
+        await ownerPage.request.patch(`/api/v1/flows/${runnableFlow.id}`, {
+          headers: {
+            "If-Match": `"flow:${runnableFlow.id}:${editorVersion.edit_revision}"`,
+          },
+          data: { description: `newer-owner-version-${runId}` },
+        }),
+        200,
+        "owner saves while collaborator draft is pending",
+      );
+      const staleResponse = directPage.waitForResponse(
+        (response) =>
+          response.request().method() === "PATCH" &&
+          new URL(response.url()).pathname ===
+            `/api/v1/flows/${runnableFlow.id}` &&
+          response.request().postData()?.includes(marker) === true,
+      );
+      releaseSave();
+      await requireStatus(await staleResponse, 412, "open editor stale save");
+      await flushPendingFlowAutosave(directPage);
+      await expect(input).toHaveValue(marker);
+      await input.fill(`${marker}-continued`);
+      await flushPendingFlowAutosave(directPage);
+      await expect(input).toHaveValue(`${marker}-continued`);
+      expect(saveCount).toBe(1);
+      const persisted = await getFlow(ownerPage, runnableFlow.id);
+      expect(persisted.description).toBe(winner.description);
+      expect(persisted.edit_revision).toBe(winner.edit_revision);
+      expect(JSON.stringify(persisted.data)).not.toContain(marker);
+      await directPage.unroute(routePattern);
     },
   );
 
@@ -902,6 +1046,57 @@ test.describe("native team and resource sharing", () => {
       expect(visibleProjects.map((project) => project.id)).not.toContain(
         privateProject.id,
       );
+
+      // The same browser must discard the owner's resource and permission
+      // snapshots when it switches to the direct recipient without a reload.
+      const switchedPage = ownerPage;
+      await switchedPage.goto(`/all/folder/${privateProject.id}`);
+      await expect(
+        switchedPage.getByText(sibling.name, { exact: true }),
+      ).toBeVisible({ timeout: TIMEOUTS.standard });
+      await switchedPage.getByTestId("user-profile-settings").click();
+      const [logoutResponse] = await Promise.all([
+        switchedPage.waitForResponse(
+          (response) =>
+            response.request().method() === "POST" &&
+            new URL(response.url()).pathname === "/api/v1/logout",
+        ),
+        switchedPage
+          .getByRole("menuitem", { name: TEXTS.logout, exact: true })
+          .click(),
+      ]);
+      await requireStatus(logoutResponse, 200, "owner logout");
+      await expect(
+        switchedPage.getByRole("button", { name: TEXTS.signIn }),
+      ).toBeVisible();
+      await switchedPage
+        .getByPlaceholder(TEXTS.placeholderUsername)
+        .fill(outsider.username);
+      await switchedPage
+        .getByPlaceholder(TEXTS.placeholderPassword)
+        .fill(USER_PASSWORD);
+      await submitLoginAndRequireSuccess(switchedPage);
+      await expect(
+        switchedPage.getByTestId("user-profile-settings"),
+      ).toBeVisible({ timeout: TIMEOUTS.standard });
+      await expect(
+        switchedPage.getByText(privateProject.name, { exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        switchedPage.getByText(sibling.name, { exact: true }),
+      ).toHaveCount(0);
+      await switchedPage.getByTestId("user-profile-settings").click();
+      await switchedPage.getByTestId("menu-shared-with-me-button").click();
+      const sharedRow = switchedPage.getByRole("listitem").filter({
+        has: switchedPage.getByText(sharedFlow.name, { exact: true }),
+      });
+      await sharedRow
+        .getByRole("button", { name: "Open", exact: true })
+        .click();
+      await switchedPage.getByTestId("publish-button").click();
+      await expect(
+        switchedPage.getByTestId(`share-flow-${sharedFlow.id}`),
+      ).toHaveCount(0);
     },
   );
 });

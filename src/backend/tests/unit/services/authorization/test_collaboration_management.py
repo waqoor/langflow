@@ -1,4 +1,4 @@
-"""Real-database coverage for native team and sharing collaboration."""
+"""Real-database coverage for the registered Casbin collaboration service."""
 
 from __future__ import annotations
 
@@ -13,20 +13,23 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from fastapi import BackgroundTasks, HTTPException
-from langflow.api.v1 import authz_capabilities, authz_recipients
+from langflow.api.v1 import authz_capabilities, authz_recipients, authz_teams
 from langflow.services import deps as langflow_deps
 from langflow.services.authorization import collaboration, share_management, team_management
 from langflow.services.authorization.access_ceiling import ExternalAccessContext, set_current_external_access_context
+from langflow.services.authorization.casbin import store
+from langflow.services.authorization.casbin.service import CasbinAuthorizationService
 from langflow.services.authorization.concurrency import strong_etag
 from langflow.services.authorization.listing import resource_visible_in_scope
-from langflow.services.authorization.service import LangflowAuthorizationService
 from langflow.services.database.models.auth import (
     AuthzAuditLog,
     AuthzRole,
     AuthzRoleAssignment,
+    AuthzRoleAssignmentGrant,
     AuthzShare,
     AuthzTeam,
     AuthzTeamMember,
+    CasbinRule,
     SharePermissionLevel,
     ShareScope,
     TeamRole,
@@ -36,6 +39,9 @@ from langflow.services.database.models.folder.model import Folder
 from langflow.services.database.models.user.model import User
 from lfx.services import deps as lfx_deps
 from lfx.services.authorization.base import ResourceVisibilityScope
+from lfx.services.authorization.context import authorization_session
+from lfx.services.manager import get_service_manager
+from lfx.services.schema import ServiceType
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -47,11 +53,16 @@ if TYPE_CHECKING:
 @dataclass(frozen=True, slots=True)
 class CollaborationDatabase:
     engine: AsyncEngine
-    service: LangflowAuthorizationService
+    service: CasbinAuthorizationService
     dialect: str
 
-    def session(self) -> AsyncSession:
-        return AsyncSession(self.engine, expire_on_commit=False)
+    @asynccontextmanager
+    async def session(self) -> AsyncIterator[AsyncSession]:
+        """Start direct test mutations with the same early ordering as API writers."""
+        async with AsyncSession(self.engine, expire_on_commit=False) as session:
+            await self.service.acquire_resource_mutation_lock(session=session)
+            with authorization_session(session):
+                yield session
 
 
 @pytest_asyncio.fixture
@@ -78,10 +89,12 @@ async def collaboration_db(
         Flow.__table__,
         AuthzRole.__table__,
         AuthzRoleAssignment.__table__,
+        AuthzRoleAssignmentGrant.__table__,
         AuthzTeam.__table__,
         AuthzTeamMember.__table__,
         AuthzShare.__table__,
         AuthzAuditLog.__table__,
+        CasbinRule.__table__,
     ]
     async with engine.begin() as connection:
         await connection.run_sync(lambda sync_connection: SQLModel.metadata.create_all(sync_connection, tables=tables))
@@ -94,7 +107,7 @@ async def collaboration_db(
             AUTHZ_AUDIT_DURABLE=False,
         )
     )
-    service = LangflowAuthorizationService(settings)
+    service = CasbinAuthorizationService(settings)
 
     @asynccontextmanager
     async def session_scope_readonly() -> AsyncIterator[AsyncSession]:
@@ -102,10 +115,20 @@ async def collaboration_db(
             yield session
 
     monkeypatch.setattr(lfx_deps, "session_scope_readonly", session_scope_readonly)
+
+    @asynccontextmanager
+    async def session_scope() -> AsyncIterator[AsyncSession]:
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            yield session
+            await session.commit()
+
+    monkeypatch.setattr(lfx_deps, "session_scope", session_scope)
+    monkeypatch.setitem(get_service_manager().services, ServiceType.AUTHORIZATION_SERVICE, service)
     monkeypatch.setattr(langflow_deps, "get_authorization_service", lambda: service)
     monkeypatch.setattr(collaboration, "get_authorization_service", lambda: service)
     monkeypatch.setattr(team_management, "get_authorization_service", lambda: service)
     monkeypatch.setattr(team_management, "get_settings_service", lambda: settings)
+    await service.initialize_authorization()
 
     try:
         database = CollaborationDatabase(engine=engine, service=service, dialect=engine.dialect.name)
@@ -439,6 +462,68 @@ async def test_recipient_lookup_is_authorized_and_filters_inactive_users(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("role", [TeamRole.ADMIN.value, TeamRole.MAINTAINER.value])
+@pytest.mark.parametrize("level", ["viewer", "editor"])
+async def test_team_capabilities_and_recipient_search_honor_credential_ceiling(
+    collaboration_db: CollaborationDatabase, role: str, level: str
+):
+    platform = _user("platform", is_superuser=True)
+    manager = _user("manager")
+    recipient = _user("eligible-ceiling-recipient")
+    await _seed_users(collaboration_db, platform, manager, recipient)
+    async with collaboration_db.session() as session:
+        created = await team_management.create_team(
+            session,
+            actor=platform,
+            team_name="Credential ceilings",
+            adom_name=uuid4().hex,
+            description=None,
+            is_active=True,
+            members=(
+                team_management.MemberUpsert(platform.id, TeamRole.ADMIN.value),
+                team_management.MemberUpsert(manager.id, role),
+            ),
+        )
+        team_id = created.team.id
+        await session.commit()
+
+    set_current_external_access_context(ExternalAccessContext(provider="openrag", subject="manager", level=level))
+    try:
+        async with collaboration_db.session() as session:
+            team = await authz_teams.read_team(team_id=team_id, session=session, current_user=manager)
+            assert team.current_user_role == role
+            lookup = authz_recipients.search_authorization_recipients(
+                current_user=manager,
+                session=session,
+                purpose="team_membership",
+                kind="user",
+                q=recipient.username,
+                team_id=team_id,
+            )
+            if level == "viewer":
+                with pytest.raises(HTTPException) as exc_info:
+                    await lookup
+                assert exc_info.value.status_code == 403
+            else:
+                page = await lookup
+                assert [item.id for item in page.items] == [recipient.id]
+    finally:
+        set_current_external_access_context(None)
+
+    can_write = level == "editor"
+    can_manage_roles = can_write and role == TeamRole.ADMIN.value
+    assert team.capabilities.model_dump() == {
+        "can_update": can_manage_roles,
+        "can_set_active": False,
+        "can_delete": False,
+        "can_add_user_member": can_write,
+        "can_add_privileged_member": can_manage_roles,
+        "can_change_roles": can_manage_roles,
+        "can_remove_user_member": can_write,
+    }
+
+
+@pytest.mark.asyncio
 async def test_native_service_enforces_direct_team_and_project_inherited_shares(
     collaboration_db: CollaborationDatabase,
 ):
@@ -539,6 +624,7 @@ async def test_native_service_expands_role_wildcards_into_concrete_actions(
             domain_id=None,
         )
         session.add_all([flow, assignment])
+        await store.reconcile_policy(session)
         await session.commit()
         flow_id = flow.id
 

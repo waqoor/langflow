@@ -1,3 +1,5 @@
+export const AUTHZ_STARTUP_LOG = "temp-authz-config/authz-startup.log";
+
 export const AUTHZ_JOURNEY_IDS = Object.freeze(
   Array.from(
     { length: 8 },
@@ -45,4 +47,19 @@ export function inspectAuthzJourneyTitles(titles) {
     missing,
     duplicates,
   };
+}
+
+export function assertAuthzStartup(log) {
+  const reports =
+    log.match(
+      /Authorization service=\S+ enabled=\S+ ready=\S+ team_roles=\S+ sharing=\S+ invalid_teams=\d+/g,
+    ) ?? [];
+  const expected =
+    "Authorization service=CasbinAuthorizationService enabled=True ready=True team_roles=True sharing=True invalid_teams=0";
+  if (reports.length !== 1 || reports[0] !== expected) {
+    throw new Error(
+      "Authorization E2E requires one registered Casbin authorization startup with enforcement and collaboration ready.",
+    );
+  }
+  return reports[0];
 }

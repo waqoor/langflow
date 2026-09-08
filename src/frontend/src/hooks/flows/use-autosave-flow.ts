@@ -87,22 +87,21 @@ const useAutoSaveFlow = () => {
 
   useEffect(() => {
     const staleWrite = staleWriteRef.current;
-    if (
-      staleWrite &&
-      (staleWrite.flowId !== currentFlowId ||
-        staleWrite.editRevision !== currentFlowRevision)
-    ) {
+    if (staleWrite && staleWrite.flowId !== currentFlowId) {
       staleWriteRef.current = null;
     }
-  }, [currentFlowId, currentFlowRevision]);
+  }, [currentFlowId]);
 
   const isBlockedByStaleWrite = useCallback(
     (flow?: FlowType) => {
       const staleWrite = staleWriteRef.current;
       if (!staleWrite) return false;
+      // A refreshed list revision does not reconcile the local editor draft.
+      const requestedFlow = flow ?? useFlowStore.getState().currentFlow;
       return (
-        staleWrite.flowId === (flow?.id ?? currentFlowId) &&
-        staleWrite.editRevision === (flow?.edit_revision ?? currentFlowRevision)
+        staleWrite.flowId === (requestedFlow?.id ?? currentFlowId) &&
+        staleWrite.editRevision ===
+          (requestedFlow?.edit_revision ?? currentFlowRevision)
       );
     },
     [currentFlowId, currentFlowRevision],
@@ -112,25 +111,29 @@ const useAutoSaveFlow = () => {
     (flow?: FlowType): Promise<void> => {
       const queuedSave = saveQueueTailRef.current.then(async () => {
         if (isBlockedByStaleWrite(flow)) return;
+        const requestedFlow = flow ?? useFlowStore.getState().currentFlow;
+        const attemptedWrite = {
+          flowId: requestedFlow?.id ?? currentFlowId,
+          editRevision: requestedFlow?.edit_revision ?? currentFlowRevision,
+        };
         try {
           await saveFlow(flow);
         } catch (error) {
           const status = (error as { response?: { status?: number } })?.response
             ?.status;
           if (
+            status === 403 ||
+            status === 404 ||
             status === 412 ||
             extractApiErrorCode(error) === "RESOURCE_CHANGED"
           ) {
-            staleWriteRef.current = {
-              flowId: flow?.id ?? currentFlowId,
-              editRevision: flow?.edit_revision ?? currentFlowRevision,
-            };
+            staleWriteRef.current = attemptedWrite;
           }
           throw error;
         }
       });
-      // Keep the tail fulfilled after a failed save so later edits still get a
-      // chance to persist. The queuedSave returned to the immediate caller
+      // Keep the tail fulfilled after a failed save. Permission and revision
+      // failures remain blocked until the flow is reloaded. The immediate caller
       // retains the original rejection while the shared barrier tracks settle.
       saveQueueTailRef.current = queuedSave.catch(() => undefined);
       return queuedSave;

@@ -3260,6 +3260,17 @@ class TestGetDeploymentSync:
 
 
 class TestDeleteDeployment:
+    @pytest.fixture(autouse=True)
+    def canonical_actor(self, monkeypatch):
+        # These handler tests use an in-memory session double; real canonical
+        # actor/revocation checks are exercised by the Casbin database suite.
+        async def load_actor(_session, user_id):
+            actor = _fake_user()
+            actor.id = user_id
+            return actor
+
+        monkeypatch.setattr("langflow.services.authorization.fetch.load_mutation_actor", load_actor)
+
     @pytest.mark.asyncio
     @patch(f"{ROUTES_MODULE}.delete_deployment_by_id", new_callable=AsyncMock)
     @patch(f"{ROUTES_MODULE}.resolve_adapter_from_deployment", new_callable=AsyncMock)

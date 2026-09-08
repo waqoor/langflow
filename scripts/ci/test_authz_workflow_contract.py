@@ -1,4 +1,4 @@
-"""Structural guardrails for the mandatory native-authorization CI path."""
+"""Structural guardrails for the mandatory registered-authorization CI path."""
 
 from __future__ import annotations
 
@@ -59,6 +59,45 @@ def test_full_validation_includes_candidate_docker_job_and_ref():
     assert "run-all-tests" in docker["if"]
     assert docker["with"]["ref"] == "${{ inputs.ref || github.ref }}"
     assert "docker-runs-on" in docker["with"]["runs-on"]
+
+
+def test_authz_jobs_install_the_locked_optional_backend_dependency():
+    backend = _workflow("ci.yml")["jobs"]["test-authz-backend"]
+    installation = next(
+        step for step in backend["steps"] if step.get("name") == "Install credential-free backend test dependencies"
+    )["run"]
+    assert "--locked" in installation
+    assert "--package langflow --package langflow-base" in installation
+    assert "--extra authorization" in installation
+    assert "--extra postgresql" in installation
+    execution = next(
+        step
+        for step in backend["steps"]
+        if step.get("name", "").endswith("migration, transaction, lifecycle, and API tests")
+    )["run"]
+    assert "uv run --no-sync pytest" in execution
+    assert "src/backend/tests/unit/services/authorization/casbin_spec" in execution
+
+    browser = _workflow("typescript_test.yml")["jobs"]["setup-and-test"]
+    installation = next(step for step in browser["steps"] if step.get("name") == "Install Python Dependencies")["run"]
+    assert '"$LANGFLOW_E2E_AUTHZ" == "true"' in installation
+    assert "--locked" in installation
+    assert "--package langflow --package langflow-base" in installation
+    assert "--extra authorization" in installation
+    assert "--extra audio" in installation
+
+    unit_job = _workflow("python_test.yml")["jobs"]["build"]
+    installation = next(step for step in unit_job["steps"] if step.get("name") == "Install the project")["run"]
+    assert "--locked" in installation
+    assert "--package langflow --package langflow-base" in installation
+    assert "--extra authorization" in installation
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    for target, following in (("unit_tests", "unit_tests_looponfail"), ("real_services_tests", "lfx_tests")):
+        commands = makefile.split(f"{target}: ", 1)[1].split(f"\n{following}:", 1)[0]
+        assert "uv sync --frozen --package langflow --package langflow-base --extra authorization" in commands
+        assert "uv run --no-sync pytest" in commands
+    integration = _workflow("python_test.yml")["jobs"]["integration-tests"]
+    assert next(step for step in integration["steps"] if step.get("name") == "Install the project")["run"] == "uv sync"
 
 
 def test_authz_browser_mode_is_exact_serial_and_collision_free():
@@ -134,15 +173,52 @@ def test_authz_path_filter_covers_every_contract_layer():
     filters = yaml.safe_load((ROOT / ".github" / "changes-filter.yaml").read_text(encoding="utf-8"))
     paths = set(filters["authz-sharing"])
     assert {
+        "Makefile",
+        ".github/workflows/python_test.yml",
+        "src/frontend/tests/fixtures/prepare-authz-server.mjs",
+    } <= set(_workflow("ci-scripts-test.yml")["on"]["pull_request"]["paths"])
+    assert {
+        "auth_share_implementation_plan*.md",
         "src/backend/base/langflow/services/authorization/**",
+        "src/backend/base/langflow/services/database/lock_retry.py",
+        "src/backend/base/langflow/services/database/models/deployment/crud.py",
+        "src/backend/base/langflow/services/database/models/file/crud.py",
+        "src/backend/base/langflow/services/flow/flow_runner.py",
+        "src/backend/base/langflow/services/memory_base/service.py",
+        "src/backend/base/langflow/services/utils.py",
+        "src/backend/base/langflow/services/variable/service.py",
         "src/backend/base/langflow/alembic/**",
+        "src/backend/base/langflow/agentic/utils/assistant_runner.py",
+        "src/backend/base/langflow/initial_setup/setup.py",
+        "src/backend/base/langflow/api/v1/mappers/deployments/helpers.py",
+        "src/backend/base/langflow/api/v1/mappers/deployments/sync.py",
+        "src/backend/base/langflow/api/v1/memories.py",
+        "src/backend/base/langflow/api/v1/models.py",
+        "src/backend/base/langflow/api/v1/variable.py",
+        "src/backend/base/langflow/api/v1/projects_mcp_helpers.py",
+        "src/backend/base/langflow/api/v2/files.py",
         "src/lfx/src/lfx/services/authorization/**",
+        "src/lfx/src/lfx/services/deps.py",
+        "src/lfx/src/lfx/services/manager.py",
+        "src/lfx/tests/unit/services/test_service_manager.py",
         "src/backend/tests/conftest.py",
+        "src/backend/tests/unit/api/v1/test_deployment_guard_retry.py",
+        "src/backend/tests/unit/api/v1/test_deployment_route_handlers.py",
+        "src/backend/tests/unit/api/v1/test_deployment_sync.py",
+        "src/backend/tests/unit/api/v1/test_variable.py",
+        "src/backend/tests/unit/services/database/test_lock_retry.py",
         "src/backend/tests/unit/utils/test_flow_secrets.py",
         "src/frontend/tests/core/features/authz/**",
+        "src/frontend/tests/fixtures/prepare-authz-server.mjs",
+        "src/frontend/src/customization/utils/custom-should-skip-auth-refresh.ts",
+        "src/frontend/src/customization/components/resource-share-dialog/**",
+        "src/frontend/src/stores/flowStore.ts",
+        "src/frontend/src/stores/flowsManagerStore.ts",
+        "src/frontend/src/controllers/API/__tests__/api-auth-maintenance.test.ts",
         "src/frontend/tests/utils/resolve-blob-reports*",
         "scripts/ci/authz_endpoint_matrix.json",
         ".github/workflows/ci.yml",
         ".env.example",
         "AGENTS.md",
+        "Makefile",
     } <= paths

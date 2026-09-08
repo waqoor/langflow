@@ -5,26 +5,41 @@ slug: /authorization
 
 Langflow includes a replaceable authorization service for role-based access control (RBAC) over flows, projects, deployments, files, variables, and knowledge bases. Authentication proves who the caller is; authorization separately decides what that active identity may do.
 
-The full Langflow application registers a native production evaluator. It reads the committed Langflow user, resource, role, team, membership, and share rows for every new admission. Those canonical rows are the single source of policy truth; the native evaluator does not require Redis or a second compiled-policy database for correctness. Provider-free `lfx` retains the service interface and pass-through default, and deployments can substitute an implementation through `lfx.toml`.
+This `waqoor/langflow` fork provides one optional registered Casbin implementation in `langflow-base`. Canonical Langflow user, resource, role, team, membership, and share rows remain the single source of policy truth. The existing `casbin_rule` table stores a deterministic, rebuildable projection in the same database. Each admission reads fresh canonical context and policy together; correctness does not depend on Redis or a long-lived permission cache. Provider-free `lfx` retains the service interface and pass-through default. Installing the optional dependency does not select it automatically.
 
-Authorization is default off. When `LANGFLOW_AUTHZ_ENABLED=false`, Langflow preserves its historical owner-scoped behavior. When it is `true`, the native evaluator fails closed for unknown actions, inactive identities, invalid teams, missing policy state, or service/database failures. Capability discovery also fails closed rather than enabling collaboration controls optimistically.
+Authorization is default off. When `LANGFLOW_AUTHZ_ENABLED=false`, Langflow preserves its historical owner-scoped behavior. When the registered Casbin service is enabled, unknown actions, inactive identities, invalid teams, missing policy state, and service/database failures deny access. Capability discovery fails closed. An unavailable selected implementation cannot fall back to the OSS service.
 
-## Enable native authorization and collaboration
+## Enable authorization and collaboration
+
+Install the authorization extra from the same fork candidate as the application. From a source checkout:
+
+```bash
+uv sync --locked --package langflow --package langflow-base --extra authorization
+```
+
+Select the service in `LANGFLOW_CONFIG_DIR/lfx.toml`:
+
+```toml
+[services]
+authorization_service = "langflow.services.authorization.casbin.service:CasbinAuthorizationService"
+```
+
+The optional `casbin` distribution is locked at `1.43.0`; `model.conf` ships inside the backend package and is loaded through package resources. Use the built fork candidate when installing wheels. A released upstream package does not establish support for this implementation.
 
 1. Back up the application database and record the backup identifier and current Alembic revision. Apply the normal migrations, including `bf6c22022777`.
 2. Disable auto-login (`LANGFLOW_AUTO_LOGIN=false`), configure a strong bootstrap superuser password and `LANGFLOW_SECRET_KEY`, and terminate TLS at a trusted HTTPS boundary. Distinct authenticated users are required to validate sharing.
 3. While application writes are stopped, run `langflow authz teams-check`. If it reports legacy empty or adminless teams, prepare an explicit JSON mapping and run `langflow authz teams-repair --mapping-file <path>`. The repair command never guesses or promotes an administrator.
 4. Set `LANGFLOW_AUTHZ_ENABLED=true`. For compliance-grade authorization logs, also set both `LANGFLOW_AUTHZ_AUDIT_ENABLED=true` and `LANGFLOW_AUTHZ_AUDIT_DURABLE=true`.
-5. Start Langflow and inspect its authorization readiness log. Call `GET /api/v1/authz/capabilities` as an authenticated user and require `enforcement_active`, `service_ready`, `team_roles_supported`, and `user_team_sharing_supported` to be `true` before exposing collaboration features.
+5. Start the synced candidate with `uv run --no-sync langflow run` and require `CasbinAuthorizationService` in its authorization readiness log. Call `GET /api/v1/authz/capabilities` as an authenticated user and require `enforcement_active`, `service_ready`, `team_roles_supported`, `user_team_sharing_supported`, and `conditional_writes_required` to be `true` before exposing collaboration features.
 6. Create teams with an initial active Team Admin, then create user/team shares through the UI or [shares API](#shares-api).
 
-If a replacement authorization service is registered, it must explicitly advertise team roles, user/team sharing, and conditional-write support. A missing or incomplete capability is unavailable, not permission to fall back to the native collaboration UI.
+The registered authorization service must explicitly advertise team roles, user/team sharing, and conditional-write support. Missing or incomplete capabilities leave the corresponding collaboration controls unavailable.
 
 ## Configure authorization environment variables
 
 | Variable | Description | Default |
 |---|---|---|
-| `LANGFLOW_AUTHZ_ENABLED` | Enable enforcement through the registered authorization service. Full Langflow supplies the native canonical-table evaluator. | `false` |
+| `LANGFLOW_AUTHZ_ENABLED` | Enable enforcement through the explicitly registered authorization service. The flag alone does not select Casbin. | `false` |
 | `LANGFLOW_AUTHZ_SUPERUSER_BYPASS` | Let an active superuser bypass resource checks, subject to any narrower external credential ceiling. It never turns a Team Admin into a Platform Admin. | `true` |
 | `LANGFLOW_AUTHZ_AUDIT_ENABLED` | Write decision and share-administration audit rows. This is independent of enforcement and is best effort unless durable mode is enabled. | `false` |
 | `LANGFLOW_AUTHZ_AUDIT_DURABLE` | Wait for each accepted audit row to commit. A full bounded queue applies backpressure and persistence failures fail the triggering request with a sanitized error. Enable this before treating the audit table as a compliance or external-delivery source. | `false` |
@@ -40,7 +55,7 @@ failure class names; database exception text is never exposed.
 
 ## System roles
 
-Langflow seeds three built-in system roles. The native service evaluates their permission slugs directly. These roles cannot be deleted.
+Langflow seeds three built-in system roles. The compiler projects their permission slugs into exact Casbin actions. These roles cannot be deleted.
 
 | Role | Permission slugs |
 |---|---|
@@ -48,7 +63,7 @@ Langflow seeds three built-in system roles. The native service evaluates their p
 | `developer` | Viewer permissions plus flow write/create; deployment write/create/execute; project write/create; and knowledge-base, variable, and file write/create (including knowledge-base ingest) |
 | `admin` | Developer permissions plus resource delete, flow deploy, and share read/create/update/delete |
 
-You can create additional roles with the [roles API](#roles-api). A role assignment applies only in its canonical global, workspace, or project domain.
+You can create additional roles with the [roles API](#roles-api). A role assignment applies only in its canonical global, workspace, or project domain, intersected with the role's own workspace restriction. Parent-role permissions retain that scope restriction. Supported wildcard permissions expand into finite actions; they do not introduce wildcard administrative authority.
 
 ## Team roles and resource-sharing permissions
 
@@ -162,7 +177,7 @@ Targeted `user` and `team` scopes require an active existing recipient. Duplicat
 
 Individual reads return `ETag: "share:<uuid>:<revision>"`. When the registered service requires conditional writes, `PATCH` and `DELETE` require that value in `If-Match`. A missing header returns `428 PRECONDITION_REQUIRED`; a stale value returns `412 SHARE_CHANGED`. Refetch and ask the user to reconcile the current grant—do not retry a stale permission update automatically. A changed update increments `revision`; an authorized no-op keeps it unchanged.
 
-Every share mutation writes its canonical mutation audit in the same transaction. Post-commit invalidation is advisory for replacement-service caches; the native service reads committed policy on every new admission, so correctness does not depend on invalidation delivery.
+Every share mutation commits canonical state, derived policy changes, and its mutation audit in the caller's transaction. Policy-relevant writers acquire transaction-scoped PostgreSQL advisory locking or an early SQLite write transaction before reading authoritative state. Reconciliation inserts missing rules, deletes obsolete rules, and preserves unchanged rows. Post-commit notifications are advisory; they cannot republish stale policy. Ordinary content-only saves do not recompile policy.
 
 ### Roles API
 
@@ -206,7 +221,7 @@ The create payload must include at least one active `admin`. Team `PATCH` applie
 
 ## Conditional flow and project writes
 
-Flow and project reads return strong ETags based on `edit_revision`. When native collaboration is enabled, mutations require the observed ETag through `If-Match`; stable-ID creates require `If-None-Match: *`. Missing preconditions return `428 PRECONDITION_REQUIRED` and stale resources return `412 RESOURCE_CHANGED`. The UI must stop auto-save, refetch, and let the user reconcile changes instead of overwriting another editor's work or retrying automatically. Supplying a condition is honored even when the service does not require the native contract.
+Flow and project reads return strong ETags based on `edit_revision`. When collaboration is enabled, mutations require the observed ETag through `If-Match`; stable-ID creates require `If-None-Match: *`. Missing preconditions return `428 PRECONDITION_REQUIRED` and stale resources return `412 RESOURCE_CHANGED`. On a stale save, the editor preserves the local graph and stops automatic saves until the user reloads and reconciles it. Supplying a condition is honored even when the service does not require conditional writes.
 
 An editable share permits content changes only. Owners retain owner-managed fields, publication/authentication settings, moving and deletion. A shared-project editor can create a child flow, but the authenticated creator remains that flow's owner. Project deletion validates every affected child and deployment before deleting anything.
 
@@ -214,7 +229,9 @@ Collaborator save responses use the same credential redaction as reads, includin
 
 ## Revocation and operational recovery
 
-A committed share deletion, team removal/deactivation, role change, or user deactivation controls the next admission on every worker because the native evaluator rereads canonical state. Rechecked HITL resumes also require current access. This does not cancel work already admitted before the commit or change its execution principal.
+A committed share deletion, team removal/deactivation, role change, or user deactivation controls the next admission on every worker because the service loads fresh canonical context and derived policy from one database snapshot. Read snapshots end before long-running execution. Rechecked HITL resumes also require current access. This does not cancel work already admitted before the commit or change its execution principal.
+
+If an open editor's save returns `403` or `404`, automatic saves stop and the existing permission query refreshes while the local graph is retained. Collaboration `403` responses do not trigger token refresh or replay the denied request; authentication `401` responses still use the normal session-refresh path.
 
 Removing one grant may leave effective access from ownership, a role, another team, a direct share, or project inheritance. Refresh the share summary before telling a user that access is gone. Removing a creator from a team is not an ownership transfer; their existing resources remain creator-owned. Sharing a flow also never supplies the owner's variables, files, provider credentials, nested-flow access, or other dependencies—the execution principal needs its own or separately shared dependencies.
 

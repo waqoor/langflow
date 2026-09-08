@@ -82,7 +82,7 @@ from langflow.services.authorization.concurrency import (
     require_revision_precondition,
     strong_etag,
 )
-from langflow.services.authorization.fetch import deny_to_404
+from langflow.services.authorization.fetch import authorization_admission, deny_to_404, load_mutation_actor
 from langflow.services.authorization.lifecycle import safe_share_rules_removed
 from langflow.services.authorization.public_access import (
     PublicResourceAction,
@@ -94,6 +94,7 @@ from langflow.services.authorization.team_management import actor_can_administer
 from langflow.services.authorization.utils import _resolve_authz_domain
 from langflow.services.cache.service import ThreadingInMemoryCache
 from langflow.services.database.lock_retry import (
+    RetryableTransactionError,
     is_database_lock_error,
     run_with_lock_retry,
     sanitize_database_error,
@@ -379,7 +380,7 @@ async def create_flow(
     try:
         catalog_policy_snapshot = get_catalog_policy_service().snapshot
         _validate_catalog_policy_for_write(flow.data, snapshot=catalog_policy_snapshot)
-        await persist_and_strip_mcp_secrets(flow.data, current_user.id, session)
+        carried_secrets, secret_variables = extract_and_strip_mcp_secrets(flow.data)
         # FastAPI builds the dependency's body model independently from the
         # handler's body model. Carry the exact destination that was authorized
         # into the row we persist so stale caller scope fields cannot retarget
@@ -389,12 +390,27 @@ async def create_flow(
         user_id = current_user.id
 
         async def create_attempt(_attempt: int) -> FlowRead:
+            from langflow.services.deps import get_authorization_service
+
+            await get_authorization_service().acquire_resource_mutation_lock(session=session)
+            actor = await load_mutation_actor(session, user_id)
+            attempt_flow = stable_flow.model_copy(deep=True)
+            await _canonicalize_flow_destination(session, attempt_flow, user_id, widen_for_authz=True)
+            await ensure_flow_permission(
+                actor,
+                FlowAction.CREATE,
+                workspace_id=attempt_flow.workspace_id,
+                folder_id=attempt_flow.folder_id,
+                folder_user_id=await destination_folder_owner_id(session, attempt_flow.folder_id),
+                audit_session=session,
+            )
+            await stage_mcp_secrets(carried_secrets, secret_variables, user_id, session)
             # _new_flow mutates its input while normalizing ownership, name,
             # endpoint and destination. Rebuild it for every transaction so a
             # rollback never leaves the retry with partially normalized state.
             return await _new_flow(
                 session=session,
-                flow=stable_flow.model_copy(deep=True),
+                flow=attempt_flow,
                 user_id=user_id,
                 storage_service=storage_service,
                 widen_for_authz=True,
@@ -450,179 +466,188 @@ async def read_flows(
     shared_only: bool = False,
 ):
     """Retrieve a list of flows with optional pagination, filtering, and header-only mode."""
-    try:
-        auth_settings = get_settings_service().auth_settings
+    async with authorization_admission(session) as admission:
+        try:
+            auth_settings = get_settings_service().auth_settings
 
-        default_folder = (
-            await session.exec(
-                select(Folder).where(Folder.name == DEFAULT_FOLDER_NAME, Folder.user_id == current_user.id)
-            )
-        ).first()
-        default_folder_id = default_folder.id if default_folder else None
+            default_folder = (
+                await admission.exec(
+                    select(Folder).where(Folder.name == DEFAULT_FOLDER_NAME, Folder.user_id == current_user.id)
+                )
+            ).first()
+            default_folder_id = default_folder.id if default_folder else None
 
-        starter_folder = (
-            await session.exec(select(Folder).where(Folder.name == STARTER_FOLDER_NAME, col(Folder.user_id).is_(None)))
-        ).first()
-        starter_folder_id = starter_folder.id if starter_folder else None
+            starter_folder = (
+                await admission.exec(
+                    select(Folder).where(Folder.name == STARTER_FOLDER_NAME, col(Folder.user_id).is_(None))
+                )
+            ).first()
+            starter_folder_id = starter_folder.id if starter_folder else None
 
-        if not starter_folder and not default_folder:
-            raise HTTPException(
-                status_code=404,
-                detail="Starter project and default project not found. Please create a project and add flows to it.",
-            )
+            if not starter_folder and not default_folder:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        "Starter project and default project not found. Please create a project and add flows to it."
+                    ),
+                )
 
-        # A paginated Shared with me query spans all projects. Normal list
-        # callers retain the historical implicit default-project selection.
-        if not folder_id and not shared_only:
-            folder_id = default_folder_id
+            # A paginated Shared with me query spans all projects. Normal list
+            # callers retain the historical implicit default-project selection.
+            if not folder_id and not shared_only:
+                folder_id = default_folder_id
 
-        # Rows the caller owns outright. Under AUTO_LOGIN the legacy owner-scoped
-        # query also surfaces null-owner flows; keep that in the fallback path
-        # (``fallback_clause``). The SQL prefilter union, however, must NOT
-        # blanket-include null-owner rows: the in-memory fallback routes them
-        # through ``batch_enforce`` (``filter_visible_resources``'s owner_extractor
-        # returns None, which never equals a real user id), so the prefilter keeps
-        # them out of the owned half and a null-owner flow is visible only when the
-        # plugin lists its id. AUTHZ_ENABLED and AUTO_LOGIN are independent flags,
-        # so both can be set — this keeps the two paths consistent regardless.
-        owned_clause = Flow.user_id == current_user.id
-        fallback_clause = owned_clause
-        if auth_settings.AUTO_LOGIN:
-            fallback_clause = (Flow.user_id == None) | owned_clause  # noqa: E711
+            # Rows the caller owns outright. Under AUTO_LOGIN the legacy owner-scoped
+            # query also surfaces null-owner flows; keep that in the fallback path
+            # (``fallback_clause``). The SQL prefilter union, however, must NOT
+            # blanket-include null-owner rows: the in-memory fallback routes them
+            # through ``batch_enforce`` (``filter_visible_resources``'s owner_extractor
+            # returns None, which never equals a real user id), so the prefilter keeps
+            # them out of the owned half and a null-owner flow is visible only when the
+            # plugin lists its id. AUTHZ_ENABLED and AUTO_LOGIN are independent flags,
+            # so both can be set — this keeps the two paths consistent regardless.
+            owned_clause = Flow.user_id == current_user.id
+            fallback_clause = owned_clause
+            if auth_settings.AUTO_LOGIN:
+                fallback_clause = (Flow.user_id == None) | owned_clause  # noqa: E711
 
-        # DB-layer authz prefilter: a registered authorization plugin can return
-        # the concrete set of flow ids the caller may read, letting us widen the
-        # owner-scoped query to (owned ⊕ visible) in SQL and skip the per-row
-        # in-memory filter below. OSS pass-through returns None → the query stays
-        # owner-scoped and ``filter_visible_resources`` runs unchanged.
-        visibility_scope = await visible_scope_prefilter(current_user, resource_type="flow", act=FlowAction.READ)
-        if visibility_scope is not None:
-            canonical_workspace = case(
-                (col(Flow.folder_id).is_not(None), Folder.workspace_id),
-                else_=Flow.workspace_id,
-            )
-            stmt = await apply_owned_or_visible_scope_prefilter(
-                select(Flow).outerjoin(Folder, Folder.id == Flow.folder_id),
-                id_column=Flow.id,
-                owner_clause=owned_clause,
-                workspace_expression=canonical_workspace,
-                project_column=Flow.folder_id,
-                visibility=visibility_scope,
-            )
-        else:
-            stmt = select(Flow).where(fallback_clause)
+            # DB-layer authz prefilter: a registered authorization plugin can return
+            # the concrete set of flow ids the caller may read, letting us widen the
+            # owner-scoped query to (owned ⊕ visible) in SQL and skip the per-row
+            # in-memory filter below. OSS pass-through returns None → the query stays
+            # owner-scoped and ``filter_visible_resources`` runs unchanged.
+            visibility_scope = await visible_scope_prefilter(current_user, resource_type="flow", act=FlowAction.READ)
+            if visibility_scope is not None:
+                canonical_workspace = case(
+                    (col(Flow.folder_id).is_not(None), Folder.workspace_id),
+                    else_=Flow.workspace_id,
+                )
+                stmt = await apply_owned_or_visible_scope_prefilter(
+                    select(Flow).outerjoin(Folder, Folder.id == Flow.folder_id),
+                    id_column=Flow.id,
+                    owner_clause=owned_clause,
+                    workspace_expression=canonical_workspace,
+                    project_column=Flow.folder_id,
+                    visibility=visibility_scope,
+                )
+            else:
+                stmt = select(Flow).where(fallback_clause)
 
-        # Keep discovery and pagination on the same authoritative SQL policy.
-        # `shared_only` means readable resources owned by somebody else; it is
-        # not a separate persistence path and cannot surface null-owner rows.
-        if shared_only:
-            stmt = stmt.where(col(Flow.user_id).is_not(None), Flow.user_id != current_user.id)
+            # Keep discovery and pagination on the same authoritative SQL policy.
+            # `shared_only` means readable resources owned by somebody else; it is
+            # not a separate persistence path and cannot surface null-owner rows.
+            if shared_only:
+                stmt = stmt.where(col(Flow.user_id).is_not(None), Flow.user_id != current_user.id)
 
-        if remove_example_flows:
-            stmt = stmt.where(Flow.folder_id != starter_folder_id)
+            if remove_example_flows:
+                stmt = stmt.where(Flow.folder_id != starter_folder_id)
 
-        if components_only:
-            stmt = stmt.where(Flow.is_component == True)  # noqa: E712
-
-        if flow_type is not None:
-            stmt = stmt.where(Flow.flow_type == flow_type)
-
-        if get_all:
-            flows = (await session.exec(stmt)).all()
-            flows = validate_is_component(flows)
             if components_only:
-                flows = [flow for flow in flows if flow.is_component]
-            if remove_example_flows and starter_folder_id:
-                flows = [flow for flow in flows if flow.folder_id != starter_folder_id]
-            # When no DB prefilter is available (OSS pass-through), drop denied
-            # rows in memory (per-flow domain_extractor). When the prefilter is
-            # active the SQL union above is already authoritative, so skip the
-            # per-row enforce to avoid an N+1.
+                stmt = stmt.where(Flow.is_component == True)  # noqa: E712
+
+            if flow_type is not None:
+                stmt = stmt.where(Flow.flow_type == flow_type)
+
+            if get_all:
+                flows = (await admission.exec(stmt)).all()
+                flows = validate_is_component(flows)
+                if components_only:
+                    flows = [flow for flow in flows if flow.is_component]
+                if remove_example_flows and starter_folder_id:
+                    flows = [flow for flow in flows if flow.folder_id != starter_folder_id]
+                # When no DB prefilter is available (OSS pass-through), drop denied
+                # rows in memory (per-flow domain_extractor). When the prefilter is
+                # active the SQL union above is already authoritative, so skip the
+                # per-row enforce to avoid an N+1.
+                if visibility_scope is None:
+                    flows = await filter_visible_resources(
+                        current_user,
+                        resource_type="flow",
+                        candidates=list(flows),
+                        domain_extractor=lambda flow: _resolve_authz_domain(flow.workspace_id, flow.folder_id),
+                        owner_extractor=lambda flow: flow.user_id,
+                        act=FlowAction.READ,
+                    )
+                if header_flows:
+                    # Convert to FlowHeader objects and compress the response
+                    header_owner_ids = {flow.user_id for flow in flows if flow.user_id is not None}
+                    header_owners_by_id: dict[UUID, str] = {}
+                    if header_owner_ids:
+                        header_owners_by_id = dict(
+                            (
+                                await admission.exec(
+                                    select(User.id, User.username).where(col(User.id).in_(header_owner_ids))
+                                )
+                            ).all()
+                        )
+                    flow_headers = []
+                    for flow in flows:
+                        header = FlowHeader.model_validate(flow, from_attributes=True)
+                        header.owner_username = header_owners_by_id.get(flow.user_id)
+                        header.is_owner = flow.user_id == current_user.id
+                        flow_headers.append(header)
+                    return compress_response(flow_headers)
+
+                # Convert to FlowRead while session is still active to avoid detached instance errors
+                flow_owner_ids = {flow.user_id for flow in flows if flow.user_id is not None}
+                flow_owners_by_id: dict[UUID, str] = {}
+                if flow_owner_ids:
+                    flow_owners_by_id = dict(
+                        (
+                            await admission.exec(select(User.id, User.username).where(col(User.id).in_(flow_owner_ids)))
+                        ).all()
+                    )
+                flow_reads = [
+                    flow_read_for_actor(flow, current_user.id, owner_username=flow_owners_by_id.get(flow.user_id))
+                    for flow in flows
+                ]
+                return compress_response(flow_reads)
+
+            if folder_id is not None:
+                stmt = stmt.where(Flow.folder_id == folder_id)
+            if shared_only:
+                stmt = stmt.order_by(Flow.name, Flow.id)
+
+            import warnings
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", category=DeprecationWarning, module=r"fastapi_pagination\.ext\.sqlalchemy"
+                )
+                page = await apaginate(admission, stmt, params=params)
+
+            # Same authz handling as get_all. With the SQL prefilter active the union
+            # was applied before pagination, so ``page.total`` is accurate; the OSS
+            # fallback narrows ``page.items`` in memory and ``page.total`` may
+            # overcount denied rows (unchanged from before).
             if visibility_scope is None:
-                flows = await filter_visible_resources(
+                page.items = await filter_visible_resources(
                     current_user,
                     resource_type="flow",
-                    candidates=list(flows),
+                    candidates=list(page.items),
                     domain_extractor=lambda flow: _resolve_authz_domain(flow.workspace_id, flow.folder_id),
                     owner_extractor=lambda flow: flow.user_id,
                     act=FlowAction.READ,
                 )
-            if header_flows:
-                # Convert to FlowHeader objects and compress the response
-                header_owner_ids = {flow.user_id for flow in flows if flow.user_id is not None}
-                header_owners_by_id: dict[UUID, str] = {}
-                if header_owner_ids:
-                    header_owners_by_id = dict(
-                        (
-                            await session.exec(select(User.id, User.username).where(col(User.id).in_(header_owner_ids)))
-                        ).all()
-                    )
-                flow_headers = []
-                for flow in flows:
-                    header = FlowHeader.model_validate(flow, from_attributes=True)
-                    header.owner_username = header_owners_by_id.get(flow.user_id)
-                    header.is_owner = flow.user_id == current_user.id
-                    flow_headers.append(header)
-                return compress_response(flow_headers)
-
-            # Convert to FlowRead while session is still active to avoid detached instance errors
-            flow_owner_ids = {flow.user_id for flow in flows if flow.user_id is not None}
-            flow_owners_by_id: dict[UUID, str] = {}
-            if flow_owner_ids:
-                flow_owners_by_id = dict(
-                    (await session.exec(select(User.id, User.username).where(col(User.id).in_(flow_owner_ids)))).all()
+            page_owner_ids = {flow.user_id for flow in page.items if flow.user_id is not None}
+            page_owners_by_id: dict[UUID, str] = {}
+            if page_owner_ids:
+                page_owners_by_id = dict(
+                    (await admission.exec(select(User.id, User.username).where(col(User.id).in_(page_owner_ids)))).all()
                 )
-            flow_reads = [
-                flow_read_for_actor(flow, current_user.id, owner_username=flow_owners_by_id.get(flow.user_id))
-                for flow in flows
+            page.items = [
+                flow_read_for_actor(flow, current_user.id, owner_username=page_owners_by_id.get(flow.user_id))
+                for flow in page.items
             ]
-            return compress_response(flow_reads)
+            return page  # noqa: TRY300 — final return inside try matches the existing style of this handler
 
-        if folder_id is not None:
-            stmt = stmt.where(Flow.folder_id == folder_id)
-        if shared_only:
-            stmt = stmt.order_by(Flow.name, Flow.id)
+        except HTTPException:
+            raise
+        except Exception as e:
+            import logging as _logging
 
-        import warnings
-
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", category=DeprecationWarning, module=r"fastapi_pagination\.ext\.sqlalchemy"
-            )
-            page = await apaginate(session, stmt, params=params)
-
-        # Same authz handling as get_all. With the SQL prefilter active the union
-        # was applied before pagination, so ``page.total`` is accurate; the OSS
-        # fallback narrows ``page.items`` in memory and ``page.total`` may
-        # overcount denied rows (unchanged from before).
-        if visibility_scope is None:
-            page.items = await filter_visible_resources(
-                current_user,
-                resource_type="flow",
-                candidates=list(page.items),
-                domain_extractor=lambda flow: _resolve_authz_domain(flow.workspace_id, flow.folder_id),
-                owner_extractor=lambda flow: flow.user_id,
-                act=FlowAction.READ,
-            )
-        page_owner_ids = {flow.user_id for flow in page.items if flow.user_id is not None}
-        page_owners_by_id: dict[UUID, str] = {}
-        if page_owner_ids:
-            page_owners_by_id = dict(
-                (await session.exec(select(User.id, User.username).where(col(User.id).in_(page_owner_ids)))).all()
-            )
-        page.items = [
-            flow_read_for_actor(flow, current_user.id, owner_username=page_owners_by_id.get(flow.user_id))
-            for flow in page.items
-        ]
-        return page  # noqa: TRY300 — final return inside try matches the existing style of this handler
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        import logging as _logging
-
-        _logging.getLogger(__name__).exception("Error listing flows")
-        raise HTTPException(status_code=500, detail="An internal error occurred while listing flows.") from e
+            _logging.getLogger(__name__).exception("Error listing flows")
+            raise HTTPException(status_code=500, detail="An internal error occurred while listing flows.") from e
 
 
 @router.get("/{flow_id}", response_model=FlowRead, status_code=200)
@@ -723,6 +748,7 @@ async def update_flow(
     storage_service: Annotated[StorageService, Depends(get_storage_service)],
 ):
     """Update a flow."""
+    actor_id = current_user.id
     actor = UserRead.model_validate(current_user, from_attributes=True)
     try:
         precondition_required = await _conditional_write_contract()
@@ -848,6 +874,13 @@ async def update_flow(
             )
 
         async def update_attempt(_attempt: int) -> FlowRead:
+            nonlocal current_user
+            nonlocal actor
+            from langflow.services.deps import get_authorization_service
+
+            await get_authorization_service().acquire_resource_mutation_lock(session=session)
+            current_user = await load_mutation_actor(session, actor_id)
+            actor = UserRead.model_validate(current_user, from_attributes=True)
             if folder_id_will_change:
                 return await retry_flow_operation_on_deployment_guard(
                     db=session,
@@ -902,6 +935,7 @@ async def upsert_flow(
 
     Returns 201 for creation, 200 for update.  Returns 404 if owned by another user.
     """
+    actor_id = current_user.id
     from fastapi.responses import JSONResponse
 
     # Read once, outside the retry loop: a rollback between attempts expires the ORM User
@@ -912,196 +946,205 @@ async def upsert_flow(
     carried_secrets, secret_variables = extract_and_strip_mcp_secrets(flow.data)
 
     try:
-        catalog_policy_snapshot = get_catalog_policy_service().snapshot
-        # Check if flow exists (without user filter to distinguish ownership vs CREATE)
-        existing_flow = (await session.exec(select(Flow).where(Flow.id == flow_id))).first()
 
-        if existing_flow is not None:
-            # Block non-owner upsert when cross-user fetch is off (UUID privacy).
+        async def upsert_attempt(_attempt: int) -> JSONResponse:
+            nonlocal current_user
             from langflow.services.deps import get_authorization_service
 
-            authz = get_authorization_service()
-            can_widen = await authz.supports_cross_user_fetch() and await authz.is_enabled()
-            if not can_widen and existing_flow.user_id != current_user.id:
-                raise HTTPException(status_code=404, detail="Flow not found")
+            await get_authorization_service().acquire_resource_mutation_lock(session=session)
+            current_user = await load_mutation_actor(session, actor_id)
+            catalog_policy_snapshot = get_catalog_policy_service().snapshot
+            # Check if flow exists (without user filter to distinguish ownership vs CREATE)
+            existing_flow = (await session.exec(select(Flow).where(Flow.id == flow_id))).first()
 
-            try:
-                await ensure_flow_permission(
-                    current_user,
-                    FlowAction.WRITE,
-                    flow_id=flow_id,
-                    flow_user_id=existing_flow.user_id,
-                    workspace_id=existing_flow.workspace_id,
-                    folder_id=existing_flow.folder_id,
-                    audit_session=session,
-                )
-            except HTTPException as exc:
-                raise deny_to_404(exc, detail="Flow not found") from exc
+            if existing_flow is not None:
+                # Block non-owner upsert when cross-user fetch is off (UUID privacy).
+                from langflow.services.deps import get_authorization_service
 
-            precondition_required = await _conditional_write_contract()
-            _check_existing_put_creation_guard(existing_flow, if_none_match)
-
-            # Destination check (see update_flow above): resolve the actual
-            # owner-folder/workspace tuple and authorize WRITE there.
-            # ``_update_existing_flow`` applies payload values via
-            # ``model_dump(exclude_unset=True, exclude_none=True)``, so None
-            # means "keep existing" and a non-None differing value means "move".
-            requested_folder_id = flow.folder_id
-            target_workspace_id, target_folder_id = await _resolve_flow_destination(
-                session,
-                existing_flow.user_id,
-                requested_folder_id,
-                fallback_folder_id=existing_flow.folder_id,
-                reject_invalid=True,
-                widen_for_authz=True,
-                authorized_existing_folder_id=existing_flow.folder_id,
-            )
-            flow.workspace_id = target_workspace_id
-            if requested_folder_id is not None:
-                flow.folder_id = target_folder_id
-            if target_workspace_id != existing_flow.workspace_id or target_folder_id != existing_flow.folder_id:
-                if existing_flow.user_id != current_user.id and not actor_can_administer_platform(current_user):
-                    raise HTTPException(status_code=403, detail="Only a workflow owner may move it.")
-                try:
-                    await ensure_flow_permission(
-                        current_user,
-                        FlowAction.CREATE,
-                        workspace_id=target_workspace_id,
-                        folder_id=target_folder_id,
-                        folder_user_id=await destination_folder_owner_id(session, target_folder_id),
-                        audit_session=session,
-                    )
-                except HTTPException as exc:
-                    raise deny_to_404(exc, detail="Flow not found") from exc
-
-            # Sync deployment state before folder changes
-            # Explicit folder_id=None is ignored here because _update_existing_flow
-            # also uses exclude_none=True for update_data.
-            folder_id_will_change = target_folder_id != existing_flow.folder_id
-
-            async def update_operation() -> FlowRead:
-                # Re-load inside each attempt so retry after nested rollback never uses an expired ORM instance.
-                existing_flow_for_attempt = await _read_flow(
-                    session=session,
-                    flow_id=flow_id,
-                    user_id=current_user.id,
-                    for_update=True,
-                )
-                if existing_flow_for_attempt is None:
+                authz = get_authorization_service()
+                can_widen = await authz.supports_cross_user_fetch() and await authz.is_enabled()
+                if not can_widen and existing_flow.user_id != current_user.id:
                     raise HTTPException(status_code=404, detail="Flow not found")
-                # Re-authorize the freshly loaded source and resolved
-                # destination on every attempt. A concurrent move between the
-                # outer check and this write must not let a shared editor carry
-                # stale workspace permission into a different project.
+
                 try:
                     await ensure_flow_permission(
                         current_user,
                         FlowAction.WRITE,
                         flow_id=flow_id,
-                        flow_user_id=existing_flow_for_attempt.user_id,
-                        workspace_id=existing_flow_for_attempt.workspace_id,
-                        folder_id=existing_flow_for_attempt.folder_id,
+                        flow_user_id=existing_flow.user_id,
+                        workspace_id=existing_flow.workspace_id,
+                        folder_id=existing_flow.folder_id,
                         audit_session=session,
                     )
                 except HTTPException as exc:
                     raise deny_to_404(exc, detail="Flow not found") from exc
 
-                attempt_target_workspace_id, attempt_target_folder_id = await _resolve_flow_destination(
+                precondition_required = await _conditional_write_contract()
+                _check_existing_put_creation_guard(existing_flow, if_none_match)
+
+                # Destination check (see update_flow above): resolve the actual
+                # owner-folder/workspace tuple and authorize WRITE there.
+                # ``_update_existing_flow`` applies payload values via
+                # ``model_dump(exclude_unset=True, exclude_none=True)``, so None
+                # means "keep existing" and a non-None differing value means "move".
+                requested_folder_id = flow.folder_id
+                target_workspace_id, target_folder_id = await _resolve_flow_destination(
                     session,
-                    existing_flow_for_attempt.user_id,
+                    existing_flow.user_id,
                     requested_folder_id,
-                    fallback_folder_id=existing_flow_for_attempt.folder_id,
-                    reject_invalid=requested_folder_id is not None,
+                    fallback_folder_id=existing_flow.folder_id,
+                    reject_invalid=True,
                     widen_for_authz=True,
-                    authorized_existing_folder_id=existing_flow_for_attempt.folder_id,
+                    authorized_existing_folder_id=existing_flow.folder_id,
                 )
-                flow.workspace_id = attempt_target_workspace_id
+                flow.workspace_id = target_workspace_id
                 if requested_folder_id is not None:
-                    flow.folder_id = attempt_target_folder_id
-                if (
-                    attempt_target_workspace_id != existing_flow_for_attempt.workspace_id
-                    or attempt_target_folder_id != existing_flow_for_attempt.folder_id
-                ):
-                    if existing_flow_for_attempt.user_id != current_user.id and not actor_can_administer_platform(
-                        current_user
-                    ):
+                    flow.folder_id = target_folder_id
+                if target_workspace_id != existing_flow.workspace_id or target_folder_id != existing_flow.folder_id:
+                    if existing_flow.user_id != current_user.id and not actor_can_administer_platform(current_user):
                         raise HTTPException(status_code=403, detail="Only a workflow owner may move it.")
                     try:
                         await ensure_flow_permission(
                             current_user,
                             FlowAction.CREATE,
-                            workspace_id=attempt_target_workspace_id,
-                            folder_id=attempt_target_folder_id,
-                            folder_user_id=await destination_folder_owner_id(session, attempt_target_folder_id),
+                            workspace_id=target_workspace_id,
+                            folder_id=target_folder_id,
+                            folder_user_id=await destination_folder_owner_id(session, target_folder_id),
                             audit_session=session,
                         )
                     except HTTPException as exc:
                         raise deny_to_404(exc, detail="Flow not found") from exc
-                effective_flow_data = flow.data if flow.data is not None else existing_flow_for_attempt.data
-                _validate_catalog_policy_for_write(effective_flow_data, snapshot=catalog_policy_snapshot)
-                await stage_mcp_secrets(carried_secrets, secret_variables, writer_id, session)
-                return await _update_existing_flow(
-                    session=session,
-                    existing_flow=existing_flow_for_attempt,
-                    flow=flow,
-                    current_user=current_user,
-                    storage_service=storage_service,
-                    if_match=if_match,
-                    precondition_required=precondition_required,
+
+                # Sync deployment state before folder changes
+                # Explicit folder_id=None is ignored here because _update_existing_flow
+                # also uses exclude_none=True for update_data.
+                folder_id_will_change = target_folder_id != existing_flow.folder_id
+
+                async def update_operation() -> FlowRead:
+                    # Re-load inside each attempt so retry after nested rollback never uses an expired ORM instance.
+                    existing_flow_for_attempt = await _read_flow(
+                        session=session,
+                        flow_id=flow_id,
+                        user_id=current_user.id,
+                        for_update=True,
+                    )
+                    if existing_flow_for_attempt is None:
+                        raise HTTPException(status_code=404, detail="Flow not found")
+                    # Re-authorize the freshly loaded source and resolved
+                    # destination on every attempt. A concurrent move between the
+                    # outer check and this write must not let a shared editor carry
+                    # stale workspace permission into a different project.
+                    try:
+                        await ensure_flow_permission(
+                            current_user,
+                            FlowAction.WRITE,
+                            flow_id=flow_id,
+                            flow_user_id=existing_flow_for_attempt.user_id,
+                            workspace_id=existing_flow_for_attempt.workspace_id,
+                            folder_id=existing_flow_for_attempt.folder_id,
+                            audit_session=session,
+                        )
+                    except HTTPException as exc:
+                        raise deny_to_404(exc, detail="Flow not found") from exc
+
+                    attempt_target_workspace_id, attempt_target_folder_id = await _resolve_flow_destination(
+                        session,
+                        existing_flow_for_attempt.user_id,
+                        requested_folder_id,
+                        fallback_folder_id=existing_flow_for_attempt.folder_id,
+                        reject_invalid=requested_folder_id is not None,
+                        widen_for_authz=True,
+                        authorized_existing_folder_id=existing_flow_for_attempt.folder_id,
+                    )
+                    flow.workspace_id = attempt_target_workspace_id
+                    if requested_folder_id is not None:
+                        flow.folder_id = attempt_target_folder_id
+                    if (
+                        attempt_target_workspace_id != existing_flow_for_attempt.workspace_id
+                        or attempt_target_folder_id != existing_flow_for_attempt.folder_id
+                    ):
+                        if existing_flow_for_attempt.user_id != current_user.id and not actor_can_administer_platform(
+                            current_user
+                        ):
+                            raise HTTPException(status_code=403, detail="Only a workflow owner may move it.")
+                        try:
+                            await ensure_flow_permission(
+                                current_user,
+                                FlowAction.CREATE,
+                                workspace_id=attempt_target_workspace_id,
+                                folder_id=attempt_target_folder_id,
+                                folder_user_id=await destination_folder_owner_id(session, attempt_target_folder_id),
+                                audit_session=session,
+                            )
+                        except HTTPException as exc:
+                            raise deny_to_404(exc, detail="Flow not found") from exc
+                    effective_flow_data = flow.data if flow.data is not None else existing_flow_for_attempt.data
+                    _validate_catalog_policy_for_write(effective_flow_data, snapshot=catalog_policy_snapshot)
+                    await stage_mcp_secrets(carried_secrets, secret_variables, writer_id, session)
+                    return await _update_existing_flow(
+                        session=session,
+                        existing_flow=existing_flow_for_attempt,
+                        flow=flow,
+                        current_user=current_user,
+                        storage_service=storage_service,
+                        if_match=if_match,
+                        precondition_required=precondition_required,
+                        widen_for_authz=True,
+                    )
+
+                if folder_id_will_change:
+                    flow_read = await retry_flow_operation_on_deployment_guard(
+                        db=session,
+                        flow_owner_ids={existing_flow.id: existing_flow.user_id},
+                        operation=update_operation,
+                    )
+                else:
+                    flow_read = await update_operation()
+                status_code = 200
+            else:
+                # CREATE path - flow doesn't exist
+                await _canonicalize_flow_destination(
+                    session,
+                    flow,
+                    current_user.id,
+                    reject_invalid=True,
                     widen_for_authz=True,
                 )
-
-            if folder_id_will_change:
-                flow_read = await retry_flow_operation_on_deployment_guard(
-                    db=session,
-                    flow_owner_ids={existing_flow.id: existing_flow.user_id},
-                    operation=update_operation,
+                await ensure_flow_permission(
+                    current_user,
+                    FlowAction.CREATE,
+                    workspace_id=flow.workspace_id,
+                    folder_id=flow.folder_id,
+                    folder_user_id=await destination_folder_owner_id(session, flow.folder_id),
+                    audit_session=session,
                 )
-            else:
-                flow_read = await update_operation()
-            status_code = 200
-        else:
-            # CREATE path - flow doesn't exist
-            await _canonicalize_flow_destination(
-                session,
-                flow,
-                current_user.id,
-                reject_invalid=True,
-                widen_for_authz=True,
-            )
-            await ensure_flow_permission(
-                current_user,
-                FlowAction.CREATE,
-                workspace_id=flow.workspace_id,
-                folder_id=flow.folder_id,
-                folder_user_id=await destination_folder_owner_id(session, flow.folder_id),
-                audit_session=session,
-            )
-            precondition_required = await _conditional_write_contract()
-            _check_stable_put_creation(
-                if_match=if_match,
-                if_none_match=if_none_match,
-                required=precondition_required,
-            )
-            _validate_catalog_policy_for_write(flow.data, snapshot=catalog_policy_snapshot)
-            await stage_mcp_secrets(carried_secrets, secret_variables, writer_id, session)
-            flow_read = await _new_flow(
-                session=session,
-                flow=flow,
-                user_id=current_user.id,
-                storage_service=storage_service,
-                flow_id=flow_id,
-                fail_on_endpoint_conflict=True,
-                validate_folder=True,
-                widen_for_authz=True,
-            )
-            status_code = 201
+                precondition_required = await _conditional_write_contract()
+                _check_stable_put_creation(
+                    if_match=if_match,
+                    if_none_match=if_none_match,
+                    required=precondition_required,
+                )
+                _validate_catalog_policy_for_write(flow.data, snapshot=catalog_policy_snapshot)
+                await stage_mcp_secrets(carried_secrets, secret_variables, writer_id, session)
+                flow_read = await _new_flow(
+                    session=session,
+                    flow=flow,
+                    user_id=current_user.id,
+                    storage_service=storage_service,
+                    flow_id=flow_id,
+                    fail_on_endpoint_conflict=True,
+                    validate_folder=True,
+                    widen_for_authz=True,
+                )
+                status_code = 201
 
-        return JSONResponse(
-            status_code=status_code,
-            content=jsonable_encoder(flow_read),
-            headers={"ETag": strong_etag("flow", flow_read.id, flow_read.edit_revision)},
-        )
+            return JSONResponse(
+                status_code=status_code,
+                content=jsonable_encoder(flow_read),
+                headers={"ETag": strong_etag("flow", flow_read.id, flow_read.edit_revision)},
+            )
+
+        return await run_with_lock_retry(upsert_attempt, session=session, description=f"upsert flow {flow_id}")
 
     except HTTPException:
         raise
@@ -1130,6 +1173,12 @@ async def delete_flow(
     precondition_required = await _conditional_write_contract()
 
     async def _delete_attempt(_attempt: int) -> None:
+        nonlocal actor
+        from langflow.services.deps import get_authorization_service
+
+        await get_authorization_service().acquire_resource_mutation_lock(session=session)
+        actor = await load_mutation_actor(session, actor.id)
+
         async def _delete_operation() -> None:
             nonlocal removed_share_rules
             flow_owner_ids.clear()
@@ -1192,79 +1241,90 @@ async def create_flows(
     current_user: CurrentActiveUser,
 ):
     """Create multiple new flows."""
-    if flow_list.expected_edit_revision:
-        raise HTTPException(
-            status_code=422,
-            detail="expected_edit_revision is only valid for request contracts that update existing flows.",
-        )
-    catalog_policy_snapshot = get_catalog_policy_service().snapshot
-    # Validate the complete request before adding or flushing any rows. This
-    # keeps a denial in a later item from partially applying an earlier item.
-    for flow in flow_list.flows:
-        _validate_catalog_policy_for_write(flow.data, snapshot=catalog_policy_snapshot)
+    original_flow_list = flow_list
+    actor_id = current_user.id
 
-    # Resolve and authorize every flow's canonical project/workspace instead of
-    # trusting caller-supplied denormalized scope fields.
-    for flow in flow_list.flows:
-        await _canonicalize_flow_destination(
-            session,
-            flow,
-            current_user.id,
-            reject_invalid=flow.folder_id is not None,
-            widen_for_authz=True,
-        )
-        await ensure_flow_permission(
-            current_user,
-            FlowAction.CREATE,
-            workspace_id=flow.workspace_id,
-            folder_id=flow.folder_id,
-            folder_user_id=await destination_folder_owner_id(session, flow.folder_id),
-            audit_session=session,
-        )
-    # Credential persistence starts only after the entire destination and
-    # policy set is authorized.
-    for flow in flow_list.flows:
-        await persist_and_strip_mcp_secrets(flow.data, current_user.id, session)
-    # Guard against duplicate IDs up-front so callers get a clean 422 instead
-    # of an unhandled DB IntegrityError.  Use upload_file() for upsert semantics.
-    requested_ids = [f.id for f in flow_list.flows if f.id is not None]
-    if requested_ids:
-        existing_ids = (await session.exec(select(Flow.id).where(col(Flow.id).in_(requested_ids)))).all()
-        if existing_ids:
-            conflict = ", ".join(str(i) for i in existing_ids)
-            msg = (
-                f"Flow(s) with the following IDs already exist: {conflict}. "
-                "Use the update endpoint or upload_file() for upsert semantics."
+    async def create_batch_attempt(_attempt: int) -> list[FlowRead]:
+        from langflow.services.deps import get_authorization_service
+
+        await get_authorization_service().acquire_resource_mutation_lock(session=session)
+        current_user = await load_mutation_actor(session, actor_id)
+        flow_list = original_flow_list.model_copy(deep=True)
+        if flow_list.expected_edit_revision:
+            raise HTTPException(
+                status_code=422,
+                detail="expected_edit_revision is only valid for request contracts that update existing flows.",
             )
-            raise HTTPException(status_code=422, detail=msg)
+        catalog_policy_snapshot = get_catalog_policy_service().snapshot
+        # Validate the complete request before adding or flushing any rows. This
+        # keeps a denial in a later item from partially applying an earlier item.
+        for flow in flow_list.flows:
+            _validate_catalog_policy_for_write(flow.data, snapshot=catalog_policy_snapshot)
 
-    db_flows = []
-    for flow in flow_list.flows:
-        flow.user_id = current_user.id
-        # Exclude id from model_validate (same reasoning as _new_flow) and apply separately.
-        db_flow = Flow.model_validate(flow.model_dump(exclude={"id"}))
-        if flow.id is not None:
-            db_flow.id = flow.id
-        await _validate_and_assign_folder(session, db_flow, current_user.id, widen_for_authz=True)
-        session.add(db_flow)
-        db_flows.append(db_flow)
+        # Resolve and authorize every flow's canonical project/workspace instead of
+        # trusting caller-supplied denormalized scope fields.
+        for flow in flow_list.flows:
+            await _canonicalize_flow_destination(
+                session,
+                flow,
+                current_user.id,
+                reject_invalid=flow.folder_id is not None,
+                widen_for_authz=True,
+            )
+            await ensure_flow_permission(
+                current_user,
+                FlowAction.CREATE,
+                workspace_id=flow.workspace_id,
+                folder_id=flow.folder_id,
+                folder_user_id=await destination_folder_owner_id(session, flow.folder_id),
+                audit_session=session,
+            )
+        # Credential persistence starts only after the entire destination and
+        # policy set is authorized.
+        for flow in flow_list.flows:
+            await persist_and_strip_mcp_secrets(flow.data, current_user.id, session)
+        # Guard against duplicate IDs up-front so callers get a clean 422 instead
+        # of an unhandled DB IntegrityError.  Use upload_file() for upsert semantics.
+        requested_ids = [f.id for f in flow_list.flows if f.id is not None]
+        if requested_ids:
+            existing_ids = (await session.exec(select(Flow.id).where(col(Flow.id).in_(requested_ids)))).all()
+            if existing_ids:
+                conflict = ", ".join(str(i) for i in existing_ids)
+                msg = (
+                    f"Flow(s) with the following IDs already exist: {conflict}. "
+                    "Use the update endpoint or upload_file() for upsert semantics."
+                )
+                raise HTTPException(status_code=422, detail=msg)
 
-    # Unlike create_flow/upsert_flow, this endpoint does not route through
-    # _new_flow, so a (user_id, name)/(user_id, endpoint_name) collision reaches
-    # the flush unhandled. Left un-rolled-back on SQLite, the failed INSERT pins
-    # the write lock and the next writer busy-waits busy_timeout (30s) before its
-    # own "database is locked"; the raw error would also leak the SQL statement
-    # and bound parameters. Roll back to release the lock immediately, then map
-    # to a clean 409.
-    try:
-        await session.flush()
-    except IntegrityError as exc:
-        await session.rollback()
-        raise _handle_unique_constraint_error(exc, status_code=409) from exc
-    for db_flow in db_flows:
-        await session.refresh(db_flow)
+        db_flows = []
+        for flow in flow_list.flows:
+            flow.user_id = current_user.id
+            # Exclude id from model_validate (same reasoning as _new_flow) and apply separately.
+            db_flow = Flow.model_validate(flow.model_dump(exclude={"id"}))
+            if flow.id is not None:
+                db_flow.id = flow.id
+            await _validate_and_assign_folder(session, db_flow, current_user.id, widen_for_authz=True)
+            session.add(db_flow)
+            db_flows.append(db_flow)
 
-    return [FlowRead.model_validate(db_flow, from_attributes=True) for db_flow in db_flows]
+        # Unlike create_flow/upsert_flow, this endpoint does not route through
+        # _new_flow, so a (user_id, name)/(user_id, endpoint_name) collision reaches
+        # the flush unhandled. Left un-rolled-back on SQLite, the failed INSERT pins
+        # the write lock and the next writer busy-waits busy_timeout (30s) before its
+        # own "database is locked"; the raw error would also leak the SQL statement
+        # and bound parameters. Roll back to release the lock immediately, then map
+        # to a clean 409.
+        try:
+            await session.flush()
+        except IntegrityError as exc:
+            await session.rollback()
+            raise _handle_unique_constraint_error(exc, status_code=409) from exc
+        for db_flow in db_flows:
+            await session.refresh(db_flow)
+
+        return [FlowRead.model_validate(db_flow, from_attributes=True) for db_flow in db_flows]
+
+    return await run_with_lock_retry(create_batch_attempt, session=session, description="create flows")
 
 
 @router.post("/upload/", response_model=list[FlowRead], status_code=201)
@@ -1282,6 +1342,7 @@ async def upload_file(
     # A coarse pre-parse check here would over-reject (it would authorize the
     # caller against ``domain="*", obj="flow:*"`` regardless of where the
     # uploaded flows actually land).
+    actor_id = current_user.id
     if file is None:
         raise HTTPException(status_code=400, detail="No file provided")
 
@@ -1337,152 +1398,166 @@ async def upload_file(
     # When implemented, extract raw flow dicts here to read embedded "version"
     # arrays and create FlowVersion entries for each imported flow.
 
-    catalog_policy_snapshot = get_catalog_policy_service().snapshot
+    original_flow_list = flow_list
 
-    requested_id_list = [flow.id for flow in flow_list.flows if flow.id is not None]
-    requested_ids = set(requested_id_list)
-    if len(requested_ids) != len(requested_id_list):
-        raise HTTPException(status_code=422, detail="Invalid upload: duplicate flow IDs are not allowed")
-
-    # Lock only rows this request is permitted to resolve. Disabled/legacy mode
-    # remains owner-scoped; the native enforcer may widen the candidate fetch,
-    # after which every row is still authorized below.
-    existing_flows_by_id: dict[UUID, Flow] = {}
-    if requested_ids:
+    async def upload_attempt(_attempt: int) -> list[FlowRead]:
+        nonlocal current_user
         from langflow.services.deps import get_authorization_service
 
-        authz = get_authorization_service()
-        can_widen = await authz.supports_cross_user_fetch() and await authz.is_enabled()
-        existing_statement = select(Flow).where(col(Flow.id).in_(requested_ids)).order_by(Flow.id).with_for_update()
-        if not can_widen:
-            existing_statement = existing_statement.where(Flow.user_id == current_user.id)
-        existing_flows = (await session.exec(existing_statement)).all()
-        existing_flows_by_id = {existing_flow.id: existing_flow for existing_flow in existing_flows}
+        await get_authorization_service().acquire_resource_mutation_lock(session=session)
+        current_user = await load_mutation_actor(session, actor_id)
+        flow_list = original_flow_list.model_copy(deep=True)
+        catalog_policy_snapshot = get_catalog_policy_service().snapshot
 
-    # Resolve and authorize the complete set before credential, filesystem, or
-    # flow persistence side effects. Existing stable IDs are updates, never
-    # copies: the stored owner remains authoritative.
-    for flow in flow_list.flows:
-        fallback_folder_id = None
-        existing_flow = existing_flows_by_id.get(flow.id) if flow.id is not None else None
-        if folder_id is not None:
-            flow.folder_id = folder_id
-        elif flow.folder_id is None and existing_flow is not None:
-            fallback_folder_id = existing_flow.folder_id
-        await _canonicalize_flow_destination(
-            session,
-            flow,
-            cast(UUID, existing_flow.user_id) if existing_flow is not None else current_user.id,
-            fallback_folder_id=fallback_folder_id,
-            reject_invalid=flow.folder_id is not None,
-            widen_for_authz=True,
-            authorized_existing_folder_id=existing_flow.folder_id if existing_flow is not None else None,
-        )
-        if existing_flow is None:
-            await ensure_flow_permission(
-                current_user,
-                FlowAction.CREATE,
-                workspace_id=flow.workspace_id,
-                folder_id=flow.folder_id,
-                folder_user_id=await destination_folder_owner_id(session, flow.folder_id),
-                audit_session=session,
+        requested_id_list = [flow.id for flow in flow_list.flows if flow.id is not None]
+        requested_ids = set(requested_id_list)
+        if len(requested_ids) != len(requested_id_list):
+            raise HTTPException(status_code=422, detail="Invalid upload: duplicate flow IDs are not allowed")
+
+        # Lock only rows this request is permitted to resolve. Disabled/legacy mode
+        # remains owner-scoped; the native enforcer may widen the candidate fetch,
+        # after which every row is still authorized below.
+        existing_flows_by_id: dict[UUID, Flow] = {}
+        if requested_ids:
+            from langflow.services.deps import get_authorization_service
+
+            authz = get_authorization_service()
+            await authz.acquire_resource_mutation_lock(session=session)
+            can_widen = await authz.supports_cross_user_fetch() and await authz.is_enabled()
+            existing_statement = select(Flow).where(col(Flow.id).in_(requested_ids)).order_by(Flow.id).with_for_update()
+            if not can_widen:
+                existing_statement = existing_statement.where(Flow.user_id == current_user.id)
+            existing_flows = (await session.exec(existing_statement)).all()
+            existing_flows_by_id = {existing_flow.id: existing_flow for existing_flow in existing_flows}
+
+        # Resolve and authorize the complete set before credential, filesystem, or
+        # flow persistence side effects. Existing stable IDs are updates, never
+        # copies: the stored owner remains authoritative.
+        for flow in flow_list.flows:
+            fallback_folder_id = None
+            existing_flow = existing_flows_by_id.get(flow.id) if flow.id is not None else None
+            if folder_id is not None:
+                flow.folder_id = folder_id
+            elif flow.folder_id is None and existing_flow is not None:
+                fallback_folder_id = existing_flow.folder_id
+            await _canonicalize_flow_destination(
+                session,
+                flow,
+                cast(UUID, existing_flow.user_id) if existing_flow is not None else current_user.id,
+                fallback_folder_id=fallback_folder_id,
+                reject_invalid=flow.folder_id is not None,
+                widen_for_authz=True,
+                authorized_existing_folder_id=existing_flow.folder_id if existing_flow is not None else None,
             )
-        else:
-            destination_changed = (
-                flow.workspace_id != existing_flow.workspace_id or flow.folder_id != existing_flow.folder_id
-            )
-            if (
-                destination_changed
-                and existing_flow.user_id != current_user.id
-                and not actor_can_administer_platform(current_user)
-            ):
-                raise HTTPException(status_code=403, detail="Only a workflow owner may move it.")
-            try:
+            if existing_flow is None:
                 await ensure_flow_permission(
                     current_user,
-                    FlowAction.WRITE,
-                    flow_id=existing_flow.id,
-                    flow_user_id=existing_flow.user_id,
-                    workspace_id=existing_flow.workspace_id,
-                    folder_id=existing_flow.folder_id,
+                    FlowAction.CREATE,
+                    workspace_id=flow.workspace_id,
+                    folder_id=flow.folder_id,
+                    folder_user_id=await destination_folder_owner_id(session, flow.folder_id),
                     audit_session=session,
                 )
-                if destination_changed:
+            else:
+                destination_changed = (
+                    flow.workspace_id != existing_flow.workspace_id or flow.folder_id != existing_flow.folder_id
+                )
+                if (
+                    destination_changed
+                    and existing_flow.user_id != current_user.id
+                    and not actor_can_administer_platform(current_user)
+                ):
+                    raise HTTPException(status_code=403, detail="Only a workflow owner may move it.")
+                try:
                     await ensure_flow_permission(
                         current_user,
-                        FlowAction.CREATE,
-                        workspace_id=flow.workspace_id,
-                        folder_id=flow.folder_id,
-                        folder_user_id=await destination_folder_owner_id(session, flow.folder_id),
+                        FlowAction.WRITE,
+                        flow_id=existing_flow.id,
+                        flow_user_id=existing_flow.user_id,
+                        workspace_id=existing_flow.workspace_id,
+                        folder_id=existing_flow.folder_id,
                         audit_session=session,
                     )
-            except HTTPException as exc:
-                raise deny_to_404(exc, detail="Flow not found") from exc
+                    if destination_changed:
+                        await ensure_flow_permission(
+                            current_user,
+                            FlowAction.CREATE,
+                            workspace_id=flow.workspace_id,
+                            folder_id=flow.folder_id,
+                            folder_user_id=await destination_folder_owner_id(session, flow.folder_id),
+                            audit_session=session,
+                        )
+                except HTTPException as exc:
+                    raise deny_to_404(exc, detail="Flow not found") from exc
 
-        # Upload upserts ignore omitted/null data. Validate the stored graph in
-        # that case so a metadata-only write cannot bypass a newly blocked component.
-        effective_flow_data = flow.data
-        if effective_flow_data is None and existing_flow is not None:
-            effective_flow_data = existing_flow.data
-        _validate_catalog_policy_for_write(effective_flow_data, snapshot=catalog_policy_snapshot)
+            # Upload upserts ignore omitted/null data. Validate the stored graph in
+            # that case so a metadata-only write cannot bypass a newly blocked component.
+            effective_flow_data = flow.data
+            if effective_flow_data is None and existing_flow is not None:
+                effective_flow_data = existing_flow.data
+            _validate_catalog_policy_for_write(effective_flow_data, snapshot=catalog_policy_snapshot)
 
-    precondition_required = await _conditional_write_contract()
-    unexpected_revision_ids = set(flow_list.expected_edit_revision) - set(existing_flows_by_id)
-    if unexpected_revision_ids:
-        raise HTTPException(
-            status_code=422,
-            detail="expected_edit_revision keys must identify existing authorized flows in this upload.",
-        )
-    for existing_flow in existing_flows_by_id.values():
-        expected_revision = flow_list.expected_edit_revision.get(existing_flow.id)
-        supplied_etag = (
-            strong_etag("flow", existing_flow.id, expected_revision) if expected_revision is not None else None
-        )
-        _check_flow_revision(existing_flow, if_match=supplied_etag, required=precondition_required)
+        precondition_required = await _conditional_write_contract()
+        unexpected_revision_ids = set(flow_list.expected_edit_revision) - set(existing_flows_by_id)
+        if unexpected_revision_ids:
+            raise HTTPException(
+                status_code=422,
+                detail="expected_edit_revision keys must identify existing authorized flows in this upload.",
+            )
+        for existing_flow in existing_flows_by_id.values():
+            expected_revision = flow_list.expected_edit_revision.get(existing_flow.id)
+            supplied_etag = (
+                strong_etag("flow", existing_flow.id, expected_revision) if expected_revision is not None else None
+            )
+            _check_flow_revision(existing_flow, if_match=supplied_etag, required=precondition_required)
 
-    # Credential extraction/persistence begins only after all authorization and
-    # optimistic-precondition checks have passed.
-    for flow in flow_list.flows:
-        await persist_and_strip_mcp_secrets(flow.data, current_user.id, session)
-
-    try:
-        flow_reads: list[FlowRead] = []
+        # Credential extraction/persistence begins only after all authorization and
+        # optimistic-precondition checks have passed.
         for flow in flow_list.flows:
-            stable_id = flow.id
-            existing_flow = existing_flows_by_id.get(stable_id) if stable_id is not None else None
-            if existing_flow is not None:
-                expected_revision = flow_list.expected_edit_revision.get(existing_flow.id)
-                flow_read = await _update_existing_flow(
-                    session=session,
-                    existing_flow=existing_flow,
-                    flow=flow,
-                    current_user=current_user,
-                    storage_service=storage_service,
-                    if_match=(
-                        strong_etag("flow", existing_flow.id, expected_revision)
-                        if expected_revision is not None
-                        else None
-                    ),
-                    precondition_required=precondition_required,
-                    widen_for_authz=True,
-                )
-            else:
-                flow.user_id = current_user.id
-                flow_read = await _new_flow(
-                    session=session,
-                    flow=flow,
-                    user_id=current_user.id,
-                    storage_service=storage_service,
-                    flow_id=stable_id,
-                    widen_for_authz=True,
-                )
-            flow_reads.append(flow_read)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise _handle_unique_constraint_error(e) from e
-    else:
-        return flow_reads
+            await persist_and_strip_mcp_secrets(flow.data, current_user.id, session)
+
+        try:
+            flow_reads: list[FlowRead] = []
+            for flow in flow_list.flows:
+                stable_id = flow.id
+                existing_flow = existing_flows_by_id.get(stable_id) if stable_id is not None else None
+                if existing_flow is not None:
+                    expected_revision = flow_list.expected_edit_revision.get(existing_flow.id)
+                    flow_read = await _update_existing_flow(
+                        session=session,
+                        existing_flow=existing_flow,
+                        flow=flow,
+                        current_user=current_user,
+                        storage_service=storage_service,
+                        if_match=(
+                            strong_etag("flow", existing_flow.id, expected_revision)
+                            if expected_revision is not None
+                            else None
+                        ),
+                        precondition_required=precondition_required,
+                        widen_for_authz=True,
+                    )
+                else:
+                    flow.user_id = current_user.id
+                    flow_read = await _new_flow(
+                        session=session,
+                        flow=flow,
+                        user_id=current_user.id,
+                        storage_service=storage_service,
+                        flow_id=stable_id,
+                        widen_for_authz=True,
+                    )
+                flow_reads.append(flow_read)
+        except (HTTPException, RetryableTransactionError):
+            raise
+        except Exception as e:
+            if is_database_lock_error(e):
+                raise
+            raise _handle_unique_constraint_error(e) from e
+        else:
+            return flow_reads
+
+    return await run_with_lock_retry(upload_attempt, session=session, description="upload flows")
 
 
 @router.delete("/")
@@ -1521,6 +1596,7 @@ async def delete_multiple_flows(
             from langflow.services.deps import get_authorization_service
 
             authz = get_authorization_service()
+            await authz.acquire_resource_mutation_lock(session=db)
             predicates = [col(Flow.id).in_(flow_ids)]
             if not (await authz.supports_cross_user_fetch() and await authz.is_enabled()):
                 predicates.append(col(Flow.user_id) == actor.id)
@@ -1571,6 +1647,12 @@ async def delete_multiple_flows(
             return len(flows_to_delete)
 
         async def _delete_attempt(attempt: int) -> int:
+            nonlocal actor
+            from langflow.services.deps import get_authorization_service
+
+            await get_authorization_service().acquire_resource_mutation_lock(session=db)
+            actor = await load_mutation_actor(db, actor.id)
+
             async def operation() -> int:
                 # A row seen on the first attempt may be deleted concurrently while
                 # the stale SQLite transaction is rolled back. Retrying the remaining

@@ -107,10 +107,10 @@ Backend services in `src/backend/base/langflow/services/`:
 Authorization is a pluggable layer separate from authentication:
 
 - `lfx` owns `BaseAuthorizationService` and its provider-free, pass-through default.
-- The full Langflow application registers `LangflowAuthorizationService`, a native evaluator that reads committed `authz_*`, user, and resource rows. It is the single production policy path for built-in teams and sharing; it does not maintain a shadow policy database or require Redis for correctness.
+- `LangflowAuthorizationService` preserves the OSS pass-through default. This `waqoor/langflow` fork supplies the optional `CasbinAuthorizationService` through `langflow-base[authorization]`, selected explicitly in `lfx.toml`. Canonical `authz_*`, user, and resource rows remain authoritative; `casbin_rule` is their rebuildable projection. The selected service evaluates scoped roles, team operations, and shares through one Casbin model, with no native fallback or Redis correctness dependency.
 - A deployment can replace that service through the `authorization_service` entry in `lfx.toml`. A replacement must advertise the collaboration capabilities it actually implements; the frontend fails closed when the service is unavailable or incomplete.
 
-Enforcement is default **off** through `LANGFLOW_AUTHZ_ENABLED=false`, preserving historical owner-scoped behavior. With the native Langflow service and the flag enabled, unknown actions, missing policy data, inactive identities, and service failures deny rather than degrading to pass-through behavior.
+Enforcement is default **off** through `LANGFLOW_AUTHZ_ENABLED=false`, preserving historical owner-scoped behavior. With the registered Casbin service and the flag enabled, unknown actions, missing policy data, inactive identities, and service failures deny rather than degrading to pass-through behavior. Installing the optional dependency alone does not select the service.
 
 Team-management roles are distinct from resource permissions: `admin`, `maintainer`, and `user` apply only to one team's roster and settings. Platform authority remains an active `User.is_superuser`, subject to the configured bypass and credential ceiling. Resource access comes from ownership, scoped roles, user/team shares, and direct-project inheritance.
 
@@ -132,7 +132,7 @@ The enforcement request shape is `(subject, domain, object, action)`:
 - object = `flow:{uuid}` / `deployment:{uuid}` / `project:{uuid}` / `flow:*` / etc.
 - action = `read` / `write` / `create` / `delete` / `execute` / `deploy`
 
-**Share-aware fetch:** route fetch helpers (`_read_flow`, `get_flow_by_id_or_endpoint_name`, `get_deployment`, project reads in `projects.py`, v2 file fetcher, variable PATCH/DELETE in `variable.py`) branch on `BaseAuthorizationService.supports_cross_user_fetch()`. The native service returns exact database-prefiltered visibility IDs and lets `ensure_*_permission` decide direct access. A substituted service that declines this capability retains owner-scoped queries. Route handlers can convert a deny to `404` with `langflow.services.authorization.fetch.deny_to_404` to preserve UUID privacy.
+**Share-aware fetch:** route fetch helpers (`_read_flow`, `get_flow_by_id_or_endpoint_name`, `get_deployment`, project reads in `projects.py`, v2 file fetcher, variable PATCH/DELETE in `variable.py`) branch on `BaseAuthorizationService.supports_cross_user_fetch()`. The registered service derives visible IDs and direct-access decisions from the same canonical context and policy snapshot. A service that declines this capability retains owner-scoped queries. Route handlers can convert a deny to `404` with `langflow.services.authorization.fetch.deny_to_404` to preserve UUID privacy.
 
 **Share CRUD API:** `/api/v1/authz/shares` provides POST / GET / PATCH / DELETE plus the resource-scoped `/summary` view. Mutations resolve the stored resource, enforce resource-specific share administration, validate active recipients, and commit the share plus mutation audit atomically. Enabled services advertising conditional writes require the observed strong ETag through `If-Match` for share updates/deletes and flow/project mutations; missing/stale preconditions return `428`/`412`. Never retry a stale edit automatically.
 
@@ -140,7 +140,7 @@ The enforcement request shape is `(subject, domain, object, action)`:
 
 **Audit query API (Phase 4):** `GET /api/v1/authz/audit` (superuser-only) exposes a paginated, filterable view of `authz_audit_log`. Supports `user_id`, `resource_type`, `resource_id`, `action`, `result`, `since`, `until` filters; page size capped at 200.
 
-**Default role catalog:** the foundations migration `7c8d9e0f1a2b_authz_foundations` seeds the three built-in `is_system=True` roles (viewer / developer / admin) with `"{resource}:{action}"` permission slugs. The native service evaluates them directly; a replacement service may consume the same canonical catalog.
+**Default role catalog:** the foundations migration `7c8d9e0f1a2b_authz_foundations` seeds the three built-in `is_system=True` roles (viewer / developer / admin) with `"{resource}:{action}"` permission slugs. The compiler preserves the catalog, role workspace restrictions, assignment domains, and parent-role permission inheritance.
 
 **Required authorization CI:** backend acceptance is the `Run Team Sharing Backend Tests` SQLite/PostgreSQL 16 and Python 3.10/3.14 matrix. Browser acceptance is `Run Team Sharing E2E`, which sets `LANGFLOW_E2E_AUTHZ=true`, selects `tests/core/features/authz`, requires all eight `J1`-`J8` `@authz` journeys, uses distinct users, one worker, and zero retries. Normal Playwright mode excludes only that separately owned directory. Both jobs are mandatory in `CI Success` whenever `authz-sharing` paths or `run-all-tests` select them.
 
@@ -205,6 +205,7 @@ Required fixtures: `component_class`, `default_kwargs`, `file_names_mapping`
 - Pre-commit hooks require `uv run git commit`
 - Always use `uv run` when running Python commands
 - When running tests inside a sub-package (e.g. `langflow-base`, `lfx`), sync that package's dev group first: `uv sync --group dev --package langflow-base`. The default `uv sync` only resolves the top-level workspace and may leave dev-only test deps (e.g. `fakeredis`) uninstalled.
+- Backend unit and real-service test targets install the optional `authorization` extra for test collection. After syncing that extra, use `uv run --no-sync pytest ...` for focused runs so an implicit sync does not remove it.
 
 ### Graph Testing Pattern
 

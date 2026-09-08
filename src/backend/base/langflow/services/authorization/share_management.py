@@ -22,6 +22,7 @@ from langflow.services.database.models.auth import (
     ShareScope,
 )
 from langflow.services.database.models.user.model import User
+from langflow.services.deps import get_authorization_service
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -169,6 +170,7 @@ async def create_share(
     permission_level: str,
 ) -> ShareMutationResult:
     """Create one unique grant and its audit record in the same transaction."""
+    await get_authorization_service().acquire_share_mutation_lock(session=session)
     _validate_value_contract(
         resource_type=resource_type,
         scope=scope,
@@ -223,6 +225,7 @@ async def create_share(
         await session.flush()
     except IntegrityError as exc:
         raise _error(409, "SHARE_EXISTS", "A share already exists for this recipient and resource.") from exc
+    await _stage_share(session, row)
     return ShareMutationResult(row=row, resource=resource, changed=True)
 
 
@@ -233,6 +236,7 @@ async def _lock_stored_share(
     require_eligible_recipient: bool,
 ) -> tuple[AuthzShare, ResourceRecord]:
     """Lock recipient, resource, then share and verify the preliminary hint."""
+    await get_authorization_service().acquire_share_mutation_lock(session=session)
     hint_statement = select(AuthzShare).where(AuthzShare.id == share_id).execution_options(populate_existing=True)
     hint_row = (await session.exec(hint_statement)).first()
     if hint_row is None:
@@ -321,6 +325,7 @@ async def update_share(
         },
     )
     await session.flush()
+    await _stage_share(session, row)
     return ShareMutationResult(row=row, resource=resource, changed=True)
 
 
@@ -373,6 +378,7 @@ async def delete_share(
     )
     await session.delete(row)
     await session.flush()
+    await get_authorization_service().stage_share_mutation(session=session, snapshot=snapshot)
     return ShareDeletionResult(snapshot=snapshot, resource=resource)
 
 
@@ -385,22 +391,26 @@ async def delete_resource_shares(
     """Remove grants for resources being deleted without touching recipients."""
     if not resources:
         return ()
+    await get_authorization_service().acquire_share_mutation_lock(session=session)
     ordered_resources = sorted(set(resources), key=lambda item: (item[0], str(item[1])))
-    statement = (
-        select(AuthzShare)
-        .where(
-            or_(
-                *(
-                    (AuthzShare.resource_type == resource_type) & (AuthzShare.resource_id == resource_id)
-                    for resource_type, resource_id in ordered_resources
+    rows: list[AuthzShare] = []
+    for offset in range(0, len(ordered_resources), 200):
+        statement = (
+            select(AuthzShare)
+            .where(
+                or_(
+                    *(
+                        (AuthzShare.resource_type == resource_type) & (AuthzShare.resource_id == resource_id)
+                        for resource_type, resource_id in ordered_resources[offset : offset + 200]
+                    )
                 )
             )
+            .order_by(col(AuthzShare.id))
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
-        .order_by(col(AuthzShare.id))
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    rows = list((await session.exec(statement)).all())
+        rows.extend((await session.exec(statement)).all())
+    rows.sort(key=lambda row: str(row.id))
     snapshots = tuple(
         ShareRuleSnapshot(
             share_id=row.id,
@@ -428,9 +438,28 @@ async def delete_resource_shares(
             },
         )
     if rows:
-        await session.exec(delete(AuthzShare).where(col(AuthzShare.id).in_([row.id for row in rows])))
+        for offset in range(0, len(rows), 500):
+            await session.exec(
+                delete(AuthzShare).where(col(AuthzShare.id).in_([row.id for row in rows[offset : offset + 500]]))
+            )
         await session.flush()
+        targeted = next((snapshot for snapshot in snapshots if snapshot.scope in {"user", "team"}), snapshots[0])
+        await get_authorization_service().stage_share_mutation(session=session, snapshot=targeted)
     return snapshots
+
+
+async def _stage_share(session: AsyncSession, row: AuthzShare) -> None:
+    await get_authorization_service().stage_share_mutation(
+        session=session,
+        snapshot=ShareRuleSnapshot(
+            row.id,
+            row.resource_type,
+            row.resource_id,
+            row.scope,
+            row.target_id,
+            row.permission_level,
+        ),
+    )
 
 
 __all__ = [

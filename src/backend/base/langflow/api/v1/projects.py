@@ -69,11 +69,13 @@ from langflow.services.authorization.concurrency import (
     strong_etag,
 )
 from langflow.services.authorization.fetch import (
+    authorization_admission,
     authorized_or_owner_scoped,
     deny_to_404,
     deny_to_404_unless_readable,
+    load_mutation_actor,
 )
-from langflow.services.authorization.lifecycle import safe_share_rules_removed
+from langflow.services.authorization.lifecycle import safe_share_rules_removed, stage_resource_mutation
 from langflow.services.authorization.repository import load_resource
 from langflow.services.authorization.share_management import delete_resource_shares
 from langflow.services.authorization.team_management import actor_can_administer_platform
@@ -219,6 +221,7 @@ async def _new_project(
     ``current_user`` (the full ``User``) is required because the MCP registration and flow-move
     side effects operate on the owning user, not just their id.
     """
+    await get_authorization_service().acquire_resource_mutation_lock(session=session)
     new_project = Folder.model_validate(project, from_attributes=True)
     new_project.user_id = current_user.id
     # Apply the stable id: an explicit ``project_id`` (PUT upsert) overrides the uuid4 default.
@@ -363,8 +366,12 @@ async def _new_project(
 
     # Registration follows complete-set authorization and revision checks so
     # rejected imports cannot leave credential-facing project side effects.
+    if flow_ids_for_sync:
+        await stage_resource_mutation(
+            session, resource_type="project", resource_id=new_project.id, changed_fields=("folder_id",)
+        )
     if get_settings_service().settings.add_projects_to_mcp_servers:
-        await register_mcp_servers_for_project(new_project, mcp_auth, current_user, session)
+        await register_mcp_servers_for_project(new_project, mcp_auth, current_user, session, owns_transaction=False)
 
     # Convert to FolderRead while session is still active to avoid detached instance errors
     return FolderRead.model_validate(new_project, from_attributes=True)
@@ -378,17 +385,35 @@ async def create_project(
     current_user: CurrentActiveUser,
     response: Response,
 ):
+    actor_id = current_user.id
     await ensure_project_permission(
-        current_user, ProjectAction.CREATE, workspace_id=getattr(project, "workspace_id", None)
+        current_user,
+        ProjectAction.CREATE,
+        workspace_id=getattr(project, "workspace_id", None),
     )
     try:
-        created = await _new_project(
-            session=session,
-            project=project,
-            current_user=current_user,
-        )
-        response.headers["ETag"] = strong_etag("project", created.id, created.edit_revision)
-        return created  # noqa: TRY300 - retain the established route error translation
+
+        async def mutation_attempt(_attempt: int) -> FolderRead:
+            nonlocal current_user
+            from langflow.services.deps import get_authorization_service
+
+            await get_authorization_service().acquire_resource_mutation_lock(session=session)
+            current_user = await load_mutation_actor(session, actor_id)
+            await ensure_project_permission(
+                current_user,
+                ProjectAction.CREATE,
+                workspace_id=getattr(project, "workspace_id", None),
+                audit_session=session,
+            )
+            created = await _new_project(
+                session=session,
+                project=project,
+                current_user=current_user,
+            )
+            response.headers["ETag"] = strong_etag("project", created.id, created.edit_revision)
+            return created
+
+        return await run_with_lock_retry(mutation_attempt, session=session, description="create_project")
     except HTTPException:
         # Re-raise HTTP exceptions (like 409 conflicts) without modification
         raise
@@ -409,94 +434,99 @@ async def read_projects(
     get_all: bool = True,
     params: Annotated[Params | None, Depends(custom_params)] = None,
 ):
-    try:
-        # Rows the caller owns outright. The legacy owner-scoped fallback also
-        # surfaces null-owner projects (e.g. the starter project), but those must
-        # be policy-checked rather than blanket-included: ``filter_visible_resources``
-        # below treats a null owner as un-owned (its ``owner_extractor`` returns
-        # None, which never equals a real user id) and routes them through
-        # ``batch_enforce``. So the SQL prefilter union uses the owned-only clause
-        # — a null-owner project is visible only when the plugin lists its id —
-        # keeping both paths' null semantics identical (the name filter below is
-        # then a convenience, not the thing preventing a null-owner leak).
-        owned_clause = Folder.user_id == current_user.id
-        # DB-layer authz prefilter: when a plugin returns the concrete set of
-        # project ids the caller may read, widen the owner-scoped query to
-        # (owned ⊕ visible) in SQL and skip the per-row in-memory filter below.
-        # OSS pass-through returns None → owner-scoped query + filter unchanged.
-        visibility_scope = await visible_scope_prefilter(current_user, resource_type="project", act=ProjectAction.READ)
-        if visibility_scope is not None:
-            stmt = await apply_owned_or_visible_scope_prefilter(
-                select(Folder),
-                id_column=Folder.id,
-                owner_clause=owned_clause,
-                workspace_column=Folder.workspace_id,
-                project_column=Folder.id,
-                visibility=visibility_scope,
+    async with authorization_admission(session) as admission:
+        try:
+            # Rows the caller owns outright. The legacy owner-scoped fallback also
+            # surfaces null-owner projects (e.g. the starter project), but those must
+            # be policy-checked rather than blanket-included: ``filter_visible_resources``
+            # below treats a null owner as un-owned (its ``owner_extractor`` returns
+            # None, which never equals a real user id) and routes them through
+            # ``batch_enforce``. So the SQL prefilter union uses the owned-only clause
+            # — a null-owner project is visible only when the plugin lists its id —
+            # keeping both paths' null semantics identical (the name filter below is
+            # then a convenience, not the thing preventing a null-owner leak).
+            owned_clause = Folder.user_id == current_user.id
+            # DB-layer authz prefilter: when a plugin returns the concrete set of
+            # project ids the caller may read, widen the owner-scoped query to
+            # (owned ⊕ visible) in SQL and skip the per-row in-memory filter below.
+            # OSS pass-through returns None → owner-scoped query + filter unchanged.
+            visibility_scope = await visible_scope_prefilter(
+                current_user, resource_type="project", act=ProjectAction.READ
             )
-        else:
-            stmt = select(Folder).where(or_(owned_clause, Folder.user_id == None))  # noqa: E711
-        # Exclude the reserved ownerless starter row before pagination so both
-        # page items and totals describe the same authorized resource set.
-        stmt = stmt.where(or_(Folder.name != STARTER_FOLDER_NAME, col(Folder.user_id).is_not(None)))
-        if shared_only:
-            stmt = stmt.where(col(Folder.user_id).is_not(None), Folder.user_id != current_user.id)
+            if visibility_scope is not None:
+                stmt = await apply_owned_or_visible_scope_prefilter(
+                    select(Folder),
+                    id_column=Folder.id,
+                    owner_clause=owned_clause,
+                    workspace_column=Folder.workspace_id,
+                    project_column=Folder.id,
+                    visibility=visibility_scope,
+                )
+            else:
+                stmt = select(Folder).where(or_(owned_clause, Folder.user_id == None))  # noqa: E711
+            # Exclude the reserved ownerless starter row before pagination so both
+            # page items and totals describe the same authorized resource set.
+            stmt = stmt.where(or_(Folder.name != STARTER_FOLDER_NAME, col(Folder.user_id).is_not(None)))
+            if shared_only:
+                stmt = stmt.where(col(Folder.user_id).is_not(None), Folder.user_id != current_user.id)
 
-        # Shared-resource discovery must be bounded and stable across pages. The
-        # default remains the historical list response for existing callers;
-        # consumers opt into the standard Page envelope with ``get_all=false``.
-        page: Page[Folder] | None = None
-        if get_all:
-            projects = (await session.exec(stmt)).all()
-        else:
-            stmt = stmt.order_by(Folder.name != DEFAULT_FOLDER_NAME, Folder.name, Folder.id)
-            page = await apaginate(session, stmt, params=params or Params())
-            projects = list(page.items)
-        # When no DB prefilter is available (OSS pass-through), drop projects the
-        # user can't read in memory. ``domain_extractor`` groups requests by
-        # concrete project so each batch is evaluated against the same policy
-        # tuple as the single-resource guard. When the prefilter is active the
-        # SQL union is already authoritative — skip the per-row enforce to
-        # avoid an N+1.
-        if visibility_scope is None:
-            projects = await filter_visible_resources(
-                current_user,
-                resource_type="project",
-                candidates=list(projects),
-                domain_extractor=lambda project: _resolve_authz_domain(project.workspace_id, project.id),
-                owner_extractor=lambda project: project.user_id,
-                act=ProjectAction.READ,
-            )
-        sorted_projects = sorted(projects, key=lambda x: x.name != DEFAULT_FOLDER_NAME)
+            # Shared-resource discovery must be bounded and stable across pages. The
+            # default remains the historical list response for existing callers;
+            # consumers opt into the standard Page envelope with ``get_all=false``.
+            page: Page[Folder] | None = None
+            if get_all:
+                projects = (await admission.exec(stmt)).all()
+            else:
+                stmt = stmt.order_by(Folder.name != DEFAULT_FOLDER_NAME, Folder.name, Folder.id)
+                page = await apaginate(admission, stmt, params=params or Params())
+                projects = list(page.items)
+            # When no DB prefilter is available (OSS pass-through), drop projects the
+            # user can't read in memory. ``domain_extractor`` groups requests by
+            # concrete project so each batch is evaluated against the same policy
+            # tuple as the single-resource guard. When the prefilter is active the
+            # SQL union is already authoritative — skip the per-row enforce to
+            # avoid an N+1.
+            if visibility_scope is None:
+                projects = await filter_visible_resources(
+                    current_user,
+                    resource_type="project",
+                    candidates=list(projects),
+                    domain_extractor=lambda project: _resolve_authz_domain(project.workspace_id, project.id),
+                    owner_extractor=lambda project: project.user_id,
+                    act=ProjectAction.READ,
+                )
+            sorted_projects = sorted(projects, key=lambda x: x.name != DEFAULT_FOLDER_NAME)
 
-        owner_ids = {project.user_id for project in sorted_projects if project.user_id is not None}
-        owners_by_id: dict[str, str] = {}
-        if owner_ids:
-            owner_rows = (await session.exec(select(User.id, User.username).where(User.id.in_(owner_ids)))).all()
-            owners_by_id = {str(owner_id): username for owner_id, username in owner_rows}
+            owner_ids = {project.user_id for project in sorted_projects if project.user_id is not None}
+            owners_by_id: dict[str, str] = {}
+            if owner_ids:
+                owner_rows = (await admission.exec(select(User.id, User.username).where(User.id.in_(owner_ids)))).all()
+                owners_by_id = {str(owner_id): username for owner_id, username in owner_rows}
 
-        # Convert while the session is active so owner-qualified project lists
-        # do not trigger lazy loads after the request-scoped session closes.
-        project_reads = [
-            FolderListRead.model_validate(
-                project,
-                from_attributes=True,
-                update={
-                    "owner_username": owners_by_id.get(str(project.user_id)) if project.user_id is not None else None,
-                    "is_owner": str(project.user_id) == str(current_user.id),
-                    "auth_settings": project.auth_settings if project.user_id == current_user.id else None,
-                },
-            )
-            for project in sorted_projects
-        ]
-        if page is not None:
-            page.items = project_reads
-            return page
-        return project_reads  # noqa: TRY300 - final return inside try matches this handler's established style
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=sanitize_database_error(e, PROJECT_READ_FAILED)) from e
+            # Convert while the session is active so owner-qualified project lists
+            # do not trigger lazy loads after the request-scoped session closes.
+            project_reads = [
+                FolderListRead.model_validate(
+                    project,
+                    from_attributes=True,
+                    update={
+                        "owner_username": owners_by_id.get(str(project.user_id))
+                        if project.user_id is not None
+                        else None,
+                        "is_owner": str(project.user_id) == str(current_user.id),
+                        "auth_settings": project.auth_settings if project.user_id == current_user.id else None,
+                    },
+                )
+                for project in sorted_projects
+            ]
+            if page is not None:
+                page.items = project_reads
+                return page
+            return project_reads  # noqa: TRY300 - final return inside try matches this handler's established style
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=sanitize_database_error(e, PROJECT_READ_FAILED)) from e
 
 
 @router.get("/{project_id}", response_model=FolderWithPaginatedFlows | FolderReadWithFlows, status_code=200)
@@ -513,176 +543,179 @@ async def read_project(
     is_flow: bool = False,
     search: str = "",
 ):
-    try:
-        # Share-aware fetch: when an authorization plugin is
-        # registered (``SUPPORTS_CROSS_USER_FETCH=True``) the project is
-        # loaded by id alone and ``ensure_project_permission`` below decides
-        # access. The OSS pass-through keeps the owner-scoped query so the
-        # strict-pass-through stub cannot widen visibility.
-        from langflow.services.deps import get_authorization_service
+    async with authorization_admission(session) as admission:
+        try:
+            # Share-aware fetch: when an authorization plugin is
+            # registered (``SUPPORTS_CROSS_USER_FETCH=True``) the project is
+            # loaded by id alone and ``ensure_project_permission`` below decides
+            # access. The OSS pass-through keeps the owner-scoped query so the
+            # strict-pass-through stub cannot widen visibility.
+            from langflow.services.deps import get_authorization_service
 
-        authz = get_authorization_service()
-        # Cross-user fetch only when both the plugin capability and the
-        # ``AUTHZ_ENABLED`` flag are on — otherwise route guards are no-ops
-        # and widening the lookup would expose foreign projects without any
-        # policy check.
-        share_aware = await authz.supports_cross_user_fetch() and await authz.is_enabled()
-        stmt = select(Folder).options(selectinload(Folder.flows)).where(Folder.id == project_id)
-        if not share_aware:
-            stmt = stmt.where(Folder.user_id == current_user.id)
-        project = (await session.exec(stmt)).first()
-    except Exception as e:
-        if "No result found" in str(e):
-            raise HTTPException(status_code=404, detail="Project not found") from e
-        raise HTTPException(status_code=500, detail=sanitize_database_error(e, PROJECT_READ_FAILED)) from e
+            authz = get_authorization_service()
+            # Cross-user fetch only when both the plugin capability and the
+            # ``AUTHZ_ENABLED`` flag are on — otherwise route guards are no-ops
+            # and widening the lookup would expose foreign projects without any
+            # policy check.
+            share_aware = await authz.supports_cross_user_fetch() and await authz.is_enabled()
+            stmt = select(Folder).options(selectinload(Folder.flows)).where(Folder.id == project_id)
+            if not share_aware:
+                stmt = stmt.where(Folder.user_id == current_user.id)
+            project = (await admission.exec(stmt)).first()
+        except Exception as e:
+            if "No result found" in str(e):
+                raise HTTPException(status_code=404, detail="Project not found") from e
+            raise HTTPException(status_code=500, detail=sanitize_database_error(e, PROJECT_READ_FAILED)) from e
 
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
 
-    try:
-        await ensure_project_permission(
-            current_user,
-            ProjectAction.READ,
-            project_id=project_id,
-            project_user_id=project.user_id,
-            workspace_id=project.workspace_id,
-        )
-    except HTTPException as exc:
-        raise deny_to_404(exc, detail="Project not found") from exc
-
-    response.headers["ETag"] = strong_etag("project", project.id, project.edit_revision)
-
-    try:
-        # With native/share-aware enforcement, evaluate every child. This also
-        # matters for a project owner: collaborator-created workflows retain
-        # their creator as owner, while the project owner receives derived
-        # content access through the canonical policy.
-        treat_as_shared = share_aware
-
-        # DB-layer authz prefilter for the project's flows. Only meaningful for
-        # shared-project reads (owner reads are already owner-scoped and run no
-        # per-flow enforce). A concrete list lets us constrain the paginated SQL
-        # query / set-filter the eager-loaded collection to (owned ⊕ visible) and
-        # skip the per-row enforce; None keeps the in-memory fallback. The flows
-        # all live in this project, so a single project-scoped domain applies.
-        visibility_scope = (
-            await visible_scope_prefilter(
+        try:
+            await ensure_project_permission(
                 current_user,
-                resource_type="flow",
-                domain=_resolve_authz_domain(project.workspace_id, project_id),
-                act=FlowAction.READ,
+                ProjectAction.READ,
+                project_id=project_id,
+                project_user_id=project.user_id,
+                workspace_id=project.workspace_id,
             )
-            if treat_as_shared
-            else None
-        )
+        except HTTPException as exc:
+            raise deny_to_404(exc, detail="Project not found") from exc
 
-        # Check if pagination is explicitly requested by the user (both page and size provided)
-        if page is not None and size is not None:
-            stmt = select(Flow).where(Flow.folder_id == project_id)
-            if not treat_as_shared:
-                stmt = stmt.where(Flow.user_id == current_user.id)
-            elif visibility_scope is not None:
-                # Shared project with a concrete prefilter: widen to
-                # (owned ⊕ visible) at the DB layer so ``page.total`` reflects the
-                # prefilter and no per-row enforce runs.
-                stmt = await apply_owned_or_visible_scope_prefilter(
-                    stmt,
-                    id_column=Flow.id,
-                    owner_clause=Flow.user_id == current_user.id,
-                    workspace_expression=null() if project.workspace_id is None else literal(project.workspace_id),
-                    project_column=Flow.folder_id,
-                    visibility=visibility_scope,
-                )
+        response.headers["ETag"] = strong_etag("project", project.id, project.edit_revision)
 
-            if Flow.updated_at is not None:
-                stmt = stmt.order_by(Flow.updated_at.desc())  # type: ignore[attr-defined]
-            if is_component:
-                stmt = stmt.where(Flow.is_component == True)  # noqa: E712
-            if is_flow:
-                stmt = stmt.where(Flow.is_component == False)  # noqa: E712
-            if search:
-                _search = _escape_like(search)
-                stmt = stmt.where(Flow.name.like(f"%{_search}%", escape="\\"))  # type: ignore[attr-defined]
+        try:
+            # With native/share-aware enforcement, evaluate every child. This also
+            # matters for a project owner: collaborator-created workflows retain
+            # their creator as owner, while the project owner receives derived
+            # content access through the canonical policy.
+            treat_as_shared = share_aware
 
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore", category=DeprecationWarning, module=r"fastapi_pagination\.ext\.sqlalchemy"
-                )
-                paginated_flows = await apaginate(session, stmt, params=params)
-
-            # Apply the same per-flow authz filter the non-paginated branch
-            # uses so shared-project reads behave identically regardless of
-            # page/size. Without this, a project READ grant would expose
-            # every flow in the page even when finer-grained per-flow
-            # policy (deny rules, lower-permission shares) should narrow
-            # the result. OSS pass-through returns the input unchanged.
-            # Only runs as the in-memory fallback: when a concrete prefilter is
-            # available the SQL union above already narrowed the page (and
-            # ``page.total``); this fallback path's ``page.total`` may overcount
-            # when items are dropped — same caveat as ``read_flows``.
-            if treat_as_shared and visibility_scope is None:
-                paginated_flows.items = await filter_visible_resources(
+            # DB-layer authz prefilter for the project's flows. Only meaningful for
+            # shared-project reads (owner reads are already owner-scoped and run no
+            # per-flow enforce). A concrete list lets us constrain the paginated SQL
+            # query / set-filter the eager-loaded collection to (owned ⊕ visible) and
+            # skip the per-row enforce; None keeps the in-memory fallback. The flows
+            # all live in this project, so a single project-scoped domain applies.
+            visibility_scope = (
+                await visible_scope_prefilter(
                     current_user,
                     resource_type="flow",
-                    candidates=list(paginated_flows.items),
-                    domain_extractor=lambda flow: _resolve_authz_domain(project.workspace_id, flow.folder_id),
-                    owner_extractor=lambda flow: flow.user_id,
+                    domain=_resolve_authz_domain(project.workspace_id, project_id),
                     act=FlowAction.READ,
                 )
-            paginated_flows.items = [flow_read_for_actor(flow, current_user.id) for flow in paginated_flows.items]
+                if treat_as_shared
+                else None
+            )
 
-            return FolderWithPaginatedFlows(folder=_redacted_project_read(project, current_user), flows=paginated_flows)
-
-        # If no pagination requested, return flows visible to the caller.
-        if treat_as_shared:
-            # A project share grant implies access to the project itself, but
-            # per-flow policy (deny rules, lower scopes) still applies. Without
-            # this, ``list(project.flows)`` would leak every flow in the project
-            # regardless of finer-grained policy engine rules the plugin may
-            # have. OSS pass-through returns the input list unchanged, so this
-            # has no effect on default OSS installs.
-            if visibility_scope is not None:
-                # Eager-loaded ``project.flows`` constrained to (owned ⊕ visible)
-                # by set membership — the same union as the SQL prefilter, applied
-                # in memory because the relationship is already materialized
-                # (still no per-row enforce, so no N+1).
-                owner_override_allowed = await should_apply_owner_override()
-                visible_flows = [
-                    flow
-                    for flow in project.flows
-                    if (owner_override_allowed and flow.user_id == current_user.id)
-                    or resource_visible_in_scope(
-                        resource_id=flow.id,
-                        workspace_id=project.workspace_id,
-                        project_id=flow.folder_id,
+            # Check if pagination is explicitly requested by the user (both page and size provided)
+            if page is not None and size is not None:
+                stmt = select(Flow).where(Flow.folder_id == project_id)
+                if not treat_as_shared:
+                    stmt = stmt.where(Flow.user_id == current_user.id)
+                elif visibility_scope is not None:
+                    # Shared project with a concrete prefilter: widen to
+                    # (owned ⊕ visible) at the DB layer so ``page.total`` reflects the
+                    # prefilter and no per-row enforce runs.
+                    stmt = await apply_owned_or_visible_scope_prefilter(
+                        stmt,
+                        id_column=Flow.id,
+                        owner_clause=Flow.user_id == current_user.id,
+                        workspace_expression=null() if project.workspace_id is None else literal(project.workspace_id),
+                        project_column=Flow.folder_id,
                         visibility=visibility_scope,
                     )
-                ]
-            else:
-                visible_flows = await filter_visible_resources(
-                    current_user,
-                    resource_type="flow",
-                    candidates=list(project.flows),
-                    domain_extractor=lambda flow: _resolve_authz_domain(project.workspace_id, flow.folder_id),
-                    owner_extractor=lambda flow: flow.user_id,
-                    act=FlowAction.READ,
-                )
-        else:
-            visible_flows = [flow for flow in project.flows if flow.user_id == current_user.id]
-        # Convert without assigning the filtered list back to the ORM
-        # relationship. ``Folder.flows`` owns delete-orphan cascade; mutating it
-        # in this GET handler would delete every hidden flow when the request
-        # session commits.
-        project_read = FolderReadWithFlows.model_validate(project, from_attributes=True)
-        if project.user_id != current_user.id:
-            project_read.auth_settings = None
-        project_read.flows = [flow_read_for_actor(flow, current_user.id) for flow in visible_flows]
-        return project_read  # noqa: TRY300 - conversion must happen while the ORM session is active
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=sanitize_database_error(e, PROJECT_READ_FAILED)) from e
+                if Flow.updated_at is not None:
+                    stmt = stmt.order_by(Flow.updated_at.desc())  # type: ignore[attr-defined]
+                if is_component:
+                    stmt = stmt.where(Flow.is_component == True)  # noqa: E712
+                if is_flow:
+                    stmt = stmt.where(Flow.is_component == False)  # noqa: E712
+                if search:
+                    _search = _escape_like(search)
+                    stmt = stmt.where(Flow.name.like(f"%{_search}%", escape="\\"))  # type: ignore[attr-defined]
+
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore", category=DeprecationWarning, module=r"fastapi_pagination\.ext\.sqlalchemy"
+                    )
+                    paginated_flows = await apaginate(admission, stmt, params=params)
+
+                # Apply the same per-flow authz filter the non-paginated branch
+                # uses so shared-project reads behave identically regardless of
+                # page/size. Without this, a project READ grant would expose
+                # every flow in the page even when finer-grained per-flow
+                # policy (deny rules, lower-permission shares) should narrow
+                # the result. OSS pass-through returns the input unchanged.
+                # Only runs as the in-memory fallback: when a concrete prefilter is
+                # available the SQL union above already narrowed the page (and
+                # ``page.total``); this fallback path's ``page.total`` may overcount
+                # when items are dropped — same caveat as ``read_flows``.
+                if treat_as_shared and visibility_scope is None:
+                    paginated_flows.items = await filter_visible_resources(
+                        current_user,
+                        resource_type="flow",
+                        candidates=list(paginated_flows.items),
+                        domain_extractor=lambda flow: _resolve_authz_domain(project.workspace_id, flow.folder_id),
+                        owner_extractor=lambda flow: flow.user_id,
+                        act=FlowAction.READ,
+                    )
+                paginated_flows.items = [flow_read_for_actor(flow, current_user.id) for flow in paginated_flows.items]
+
+                return FolderWithPaginatedFlows(
+                    folder=_redacted_project_read(project, current_user), flows=paginated_flows
+                )
+
+            # If no pagination requested, return flows visible to the caller.
+            if treat_as_shared:
+                # A project share grant implies access to the project itself, but
+                # per-flow policy (deny rules, lower scopes) still applies. Without
+                # this, ``list(project.flows)`` would leak every flow in the project
+                # regardless of finer-grained policy engine rules the plugin may
+                # have. OSS pass-through returns the input list unchanged, so this
+                # has no effect on default OSS installs.
+                if visibility_scope is not None:
+                    # Eager-loaded ``project.flows`` constrained to (owned ⊕ visible)
+                    # by set membership — the same union as the SQL prefilter, applied
+                    # in memory because the relationship is already materialized
+                    # (still no per-row enforce, so no N+1).
+                    owner_override_allowed = await should_apply_owner_override()
+                    visible_flows = [
+                        flow
+                        for flow in project.flows
+                        if (owner_override_allowed and flow.user_id == current_user.id)
+                        or resource_visible_in_scope(
+                            resource_id=flow.id,
+                            workspace_id=project.workspace_id,
+                            project_id=flow.folder_id,
+                            visibility=visibility_scope,
+                        )
+                    ]
+                else:
+                    visible_flows = await filter_visible_resources(
+                        current_user,
+                        resource_type="flow",
+                        candidates=list(project.flows),
+                        domain_extractor=lambda flow: _resolve_authz_domain(project.workspace_id, flow.folder_id),
+                        owner_extractor=lambda flow: flow.user_id,
+                        act=FlowAction.READ,
+                    )
+            else:
+                visible_flows = [flow for flow in project.flows if flow.user_id == current_user.id]
+            # Convert without assigning the filtered list back to the ORM
+            # relationship. ``Folder.flows`` owns delete-orphan cascade; mutating it
+            # in this GET handler would delete every hidden flow when the request
+            # session commits.
+            project_read = FolderReadWithFlows.model_validate(project, from_attributes=True)
+            if project.user_id != current_user.id:
+                project_read.auth_settings = None
+            project_read.flows = [flow_read_for_actor(flow, current_user.id) for flow in visible_flows]
+            return project_read  # noqa: TRY300 - conversion must happen while the ORM session is active
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=sanitize_database_error(e, PROJECT_READ_FAILED)) from e
 
 
 async def _apply_project_update(
@@ -975,6 +1008,10 @@ async def _apply_project_update(
     # Credential-facing MCP side effects follow complete-set flow authorization
     # and revision checks, so a rejected membership update cannot leave partial
     # external configuration behind.
+    if membership_changed:
+        await stage_resource_mutation(
+            session, resource_type="project", resource_id=existing_project.id, changed_fields=("folder_id",)
+        )
     if pending_mcp_rename is not None:
         old_project_name, new_project_name = pending_mcp_rename
         await handle_mcp_server_rename(
@@ -1001,7 +1038,7 @@ async def _apply_project_update(
         mcp_composer_service: MCPComposerService = cast(
             MCPComposerService, get_service(ServiceType.MCP_COMPOSER_SERVICE)
         )
-        await mcp_composer_service.stop_project_composer(str(existing_project.id))
+        background_tasks.add_task(mcp_composer_service.stop_project_composer, str(existing_project.id))
 
     if auth_settings_updated and new_auth_type in {"apikey", "none"}:
         try:
@@ -1049,6 +1086,7 @@ async def update_project(
     response: Response,
     if_match: Annotated[str | None, Header(alias="If-Match")] = None,
 ):
+    actor_id = current_user.id
     try:
         existing_project = await authorized_or_owner_scoped(
             session,
@@ -1093,17 +1131,37 @@ async def update_project(
 
     precondition_required = await _conditional_write_contract()
     try:
-        updated = await _apply_project_update(
-            session=session,
-            existing_project=existing_project,
-            project=project,
-            current_user=current_user,
-            background_tasks=background_tasks,
-            if_match=if_match,
-            precondition_required=precondition_required,
-        )
-        response.headers["ETag"] = strong_etag("project", updated.id, updated.edit_revision)
-        return updated  # noqa: TRY300 - retain the established route error translation
+
+        async def mutation_attempt(_attempt: int) -> FolderRead:
+            nonlocal current_user
+            from langflow.services.deps import get_authorization_service
+
+            await get_authorization_service().acquire_resource_mutation_lock(session=session)
+            current_user = await load_mutation_actor(session, actor_id)
+            current_project = await authorized_or_owner_scoped(
+                session,
+                Folder,
+                id_column=Folder.id,
+                resource_id=project_id,
+                owner_column=Folder.user_id,
+                owner_id=current_user.id,
+                for_update=True,
+            )
+            if current_project is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+            updated = await _apply_project_update(
+                session=session,
+                existing_project=current_project,
+                project=project.model_copy(deep=True),
+                current_user=current_user,
+                background_tasks=background_tasks,
+                if_match=if_match,
+                precondition_required=precondition_required,
+            )
+            response.headers["ETag"] = strong_etag("project", updated.id, updated.edit_revision)
+            return updated
+
+        return await run_with_lock_retry(mutation_attempt, session=session, description="update_project")
     except HTTPException:
         # Re-raise HTTP exceptions (like 409 conflicts) without modification
         raise
@@ -1144,85 +1202,98 @@ async def upsert_project(
     inherits ``NULL`` exactly like one created via POST. Workspace assignment is not part of the
     upsert contract.
     """
+    actor_id = current_user.id
     from fastapi.responses import JSONResponse
 
     try:
         # Existence check WITHOUT user filter to distinguish ownership vs CREATE.
-        existing_project = (await session.exec(select(Folder).where(Folder.id == project_id))).first()
-
-        if existing_project is not None:
-            # Block non-owner upsert when cross-user fetch is off (UUID privacy).
+        async def mutation_attempt(_attempt: int) -> JSONResponse:
+            nonlocal current_user
             from langflow.services.deps import get_authorization_service
 
-            authz = get_authorization_service()
-            can_widen = await authz.supports_cross_user_fetch() and await authz.is_enabled()
-            if not can_widen and existing_project.user_id != current_user.id:
-                raise HTTPException(status_code=404, detail="Project not found")
+            await get_authorization_service().acquire_resource_mutation_lock(session=session)
+            current_user = await load_mutation_actor(session, actor_id)
+            existing_project = (await session.exec(select(Folder).where(Folder.id == project_id))).first()
 
-            try:
+            if existing_project is not None:
+                # Block non-owner upsert when cross-user fetch is off (UUID privacy).
+                from langflow.services.deps import get_authorization_service
+
+                authz = get_authorization_service()
+                can_widen = await authz.supports_cross_user_fetch() and await authz.is_enabled()
+                if not can_widen and existing_project.user_id != current_user.id:
+                    raise HTTPException(status_code=404, detail="Project not found")
+
+                try:
+                    await ensure_project_permission(
+                        current_user,
+                        ProjectAction.WRITE,
+                        project_id=project_id,
+                        project_user_id=existing_project.user_id,
+                        workspace_id=existing_project.workspace_id,
+                        audit_session=session,
+                    )
+                except HTTPException as exc:
+                    raise deny_to_404(exc, detail="Project not found") from exc
+
+                precondition_required = await _conditional_write_contract()
+                _check_existing_project_creation_guard(existing_project, if_none_match)
+
+                # The update core recomputes membership from the project's current flows, so
+                # flows_list/components_list on the body cannot be honored here. Fail loud rather
+                # than silently discarding them (unlike the CREATE branch, which moves them).
+                if project.flows_list or project.components_list:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "flows_list/components_list are not supported when updating an existing "
+                            "project; set a flow's project via PUT /api/v1/flows/{flow_id} instead."
+                        ),
+                    )
+
+                # Reuse the PATCH update core, which raises the 409 on a rename collision itself.
+                # Map the PUT body onto a FolderUpdate so unset fields are left untouched.
+                folder_read = await _apply_project_update(
+                    session=session,
+                    existing_project=existing_project,
+                    project=_folder_create_to_update(project),
+                    current_user=current_user,
+                    background_tasks=background_tasks,
+                    if_match=if_match,
+                    precondition_required=precondition_required,
+                )
+                status_code = 200
+            else:
+                # CREATE path - project doesn't exist. Create it at the caller-specified id and fail
+                # loud (409) on a name collision instead of auto-renaming.
                 await ensure_project_permission(
                     current_user,
-                    ProjectAction.WRITE,
+                    ProjectAction.CREATE,
+                    workspace_id=getattr(project, "workspace_id", None),
+                    audit_session=session,
+                )
+                precondition_required = await _conditional_write_contract()
+                _check_stable_project_creation(
+                    if_match=if_match,
+                    if_none_match=if_none_match,
+                    required=precondition_required,
+                )
+                folder_read = await _new_project(
+                    session=session,
+                    project=project,
+                    current_user=current_user,
                     project_id=project_id,
-                    project_user_id=existing_project.user_id,
-                    workspace_id=existing_project.workspace_id,
+                    fail_on_name_conflict=True,
                 )
-            except HTTPException as exc:
-                raise deny_to_404(exc, detail="Project not found") from exc
+                status_code = 201
 
-            precondition_required = await _conditional_write_contract()
-            _check_existing_project_creation_guard(existing_project, if_none_match)
+            return JSONResponse(
+                status_code=status_code,
+                content=jsonable_encoder(folder_read),
+                headers={"ETag": strong_etag("project", folder_read.id, folder_read.edit_revision)},
+            )
 
-            # The update core recomputes membership from the project's current flows, so
-            # flows_list/components_list on the body cannot be honored here. Fail loud rather
-            # than silently discarding them (unlike the CREATE branch, which moves them).
-            if project.flows_list or project.components_list:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "flows_list/components_list are not supported when updating an existing "
-                        "project; set a flow's project via PUT /api/v1/flows/{flow_id} instead."
-                    ),
-                )
-
-            # Reuse the PATCH update core, which raises the 409 on a rename collision itself.
-            # Map the PUT body onto a FolderUpdate so unset fields are left untouched.
-            folder_read = await _apply_project_update(
-                session=session,
-                existing_project=existing_project,
-                project=_folder_create_to_update(project),
-                current_user=current_user,
-                background_tasks=background_tasks,
-                if_match=if_match,
-                precondition_required=precondition_required,
-            )
-            status_code = 200
-        else:
-            # CREATE path - project doesn't exist. Create it at the caller-specified id and fail
-            # loud (409) on a name collision instead of auto-renaming.
-            await ensure_project_permission(
-                current_user, ProjectAction.CREATE, workspace_id=getattr(project, "workspace_id", None)
-            )
-            precondition_required = await _conditional_write_contract()
-            _check_stable_project_creation(
-                if_match=if_match,
-                if_none_match=if_none_match,
-                required=precondition_required,
-            )
-            folder_read = await _new_project(
-                session=session,
-                project=project,
-                current_user=current_user,
-                project_id=project_id,
-                fail_on_name_conflict=True,
-            )
-            status_code = 201
-
-        return JSONResponse(
-            status_code=status_code,
-            content=jsonable_encoder(folder_read),
-            headers={"ETag": strong_etag("project", folder_read.id, folder_read.edit_revision)},
-        )
+        return await run_with_lock_retry(mutation_attempt, session=session, description="upsert_project")
 
     except HTTPException:
         raise
@@ -1242,8 +1313,11 @@ async def delete_project(
     session: DbSession,
     project_id: UUID,
     current_user: CurrentActiveUser,
+    background_tasks: BackgroundTasks,
     if_match: Annotated[str | None, Header(alias="If-Match")] = None,
 ):
+    actor_id = current_user.id
+
     async def _load_project(*, for_update: bool = False) -> Folder | None:
         return await authorized_or_owner_scoped(
             session,
@@ -1362,6 +1436,7 @@ async def delete_project(
             await session.delete(target)
             # Flush eagerly so guard/constraint errors surface in-request rather than at teardown commit.
             await session.flush()
+            await stage_resource_mutation(session, resource_type="project", resource_id=project_id, deleted=True)
 
         return _delete_project_operation
 
@@ -1369,14 +1444,15 @@ async def delete_project(
     # precedes it expires every instance loaded so far. The user and the row are
     # therefore re-read with awaits — a plain attribute read on expired state
     # would lazy-load outside the greenlet context and raise MissingGreenlet.
-    async def _delete_attempt(attempt: int) -> None:
-        if attempt > 0:
-            await session.refresh(current_user)
+    async def _delete_attempt(_attempt: int) -> None:
+        nonlocal current_user
+        await get_authorization_service().acquire_resource_mutation_lock(session=session)
+        current_user = await load_mutation_actor(session, actor_id)
         target = await _load_project(for_update=True)
         if target is None:
             return
         children = await _validate_complete_delete_set(target)
-        await cleanup_mcp_on_delete(target, project_id, current_user, session)
+        await cleanup_mcp_on_delete(target, project_id, current_user, session, background_tasks=background_tasks)
         await retry_project_operation_on_deployment_guard(
             db=session,
             user_id=project_owner_id,

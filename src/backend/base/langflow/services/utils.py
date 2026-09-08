@@ -615,16 +615,17 @@ def register_all_service_factories() -> None:
     # Override LFX's no-op auth service with Langflow's full JWT implementation
     service_manager.register_service_class(ServiceType.AUTH_SERVICE, AuthService, override=True)
     service_manager.register_factory(auth_factory.AuthServiceFactory())
-    # Same pattern as ``auth_service``: register Langflow's native canonical-table
-    # authorization service here with ``override=True``. A registered
-    # authorization plugin replaces it by listing its class in
-    # ``LANGFLOW_CONFIG_DIR/lfx.toml`` (config files use ``override=True`` via
-    # ``_discover_from_config``). Plain entry-point discovery uses
-    # ``override=False`` and would lose to this default — the supported
-    # override path is the ``lfx.toml`` config, matching SSO.
-    service_manager.register_service_class(
-        ServiceType.AUTHORIZATION_SERVICE, LangflowAuthorizationService, override=True
-    )
+    # Settings/database access may discover the explicit configuration before
+    # lifespan initialization. Preserve that selection when registering the
+    # application default; a second startup registration must not replace it.
+    registered_authorization = service_manager.service_classes.get(ServiceType.AUTHORIZATION_SERVICE)
+    if registered_authorization is None or (
+        registered_authorization.__module__ == "lfx.services.authorization.service"
+        and registered_authorization.__name__ == "AuthorizationService"
+    ):
+        service_manager.register_service_class(
+            ServiceType.AUTHORIZATION_SERVICE, LangflowAuthorizationService, override=True
+        )
     service_manager.register_factory(authorization_factory.AuthorizationServiceFactory())
     service_manager.register_service_class(
         ServiceType.POLICY_BUNDLE_SERVICE,
@@ -761,6 +762,7 @@ async def initialize_services(
         from langflow.services.deps import get_authorization_service
 
         authorization_service = get_authorization_service()
+        await authorization_service.initialize_authorization()
         authz_enabled = bool(await authorization_service.is_enabled())
         team_roles = bool(await authorization_service.supports_team_roles())
         sharing = bool(await authorization_service.supports_user_team_sharing())
@@ -779,9 +781,9 @@ async def initialize_services(
             sharing,
             len(invalid_teams),
         )
-        if authz_enabled and (not authorization_ready or not team_roles or not sharing):
+        if authz_enabled and (not authorization_ready or ((team_roles or sharing) and not (team_roles and sharing))):
             msg = (
-                "Authorization is enabled but the native collaboration contract is not ready. "
+                "Authorization is enabled but the selected collaboration service is not ready. "
                 "Run `langflow authz teams-check` and repair invalid teams before startup."
             )
             raise RuntimeError(msg)

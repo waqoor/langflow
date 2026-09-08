@@ -32,7 +32,7 @@ from langflow.services.authorization.collaboration import (
     discover_collaboration_capabilities,
 )
 from langflow.services.authorization.concurrency import strong_etag
-from langflow.services.authorization.fetch import deny_to_404
+from langflow.services.authorization.fetch import authorization_admission, deny_to_404
 from langflow.services.authorization.repository import (
     EffectiveAccess,
     ResourceRecord,
@@ -519,6 +519,7 @@ async def create_share(payload: ShareCreate, current_user: CurrentActiveUser, se
     await _collaboration_contract(required=payload.scope in {ShareScope.USER.value, ShareScope.TEAM.value})
 
     async def operation(_attempt: int):
+        await get_authorization_service().acquire_share_mutation_lock(session=session)
         # A SQLite lock retry starts a fresh transaction. Re-resolve and
         # re-authorize here so neither the policy snapshot nor a durable
         # decision row belongs to the transaction that was rolled back.
@@ -578,24 +579,27 @@ async def list_shares(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[ShareRead]:
     """List only rows visible to the caller, filtered before pagination."""
-    actor = await load_active_user(session, current_user.id)
-    if actor is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
-    statement = select(AuthzShare).where(await _share_visibility_predicate(session, actor))
-    if resource_type is not None:
-        statement = statement.where(col(AuthzShare.resource_type) == resource_type)
-    if resource_id is not None:
-        statement = statement.where(col(AuthzShare.resource_id) == resource_id)
-    if target_id is not None:
-        statement = statement.where(col(AuthzShare.target_id) == target_id)
-    if scope is not None:
-        try:
-            scope = ShareScope(scope).value
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"Unknown scope {scope!r}") from exc
-        statement = statement.where(col(AuthzShare.scope) == scope)
-    statement = statement.order_by(col(AuthzShare.created_at).desc(), col(AuthzShare.id)).offset(offset).limit(limit)
-    return await _serialize_shares(session, list((await session.exec(statement)).all()))
+    async with authorization_admission(session) as admission:
+        actor = await load_active_user(admission, current_user.id)
+        if actor is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
+        statement = select(AuthzShare).where(await _share_visibility_predicate(admission, actor))
+        if resource_type is not None:
+            statement = statement.where(col(AuthzShare.resource_type) == resource_type)
+        if resource_id is not None:
+            statement = statement.where(col(AuthzShare.resource_id) == resource_id)
+        if target_id is not None:
+            statement = statement.where(col(AuthzShare.target_id) == target_id)
+        if scope is not None:
+            try:
+                scope = ShareScope(scope).value
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"Unknown scope {scope!r}") from exc
+            statement = statement.where(col(AuthzShare.scope) == scope)
+        statement = (
+            statement.order_by(col(AuthzShare.created_at).desc(), col(AuthzShare.id)).offset(offset).limit(limit)
+        )
+        return await _serialize_shares(admission, list((await admission.exec(statement)).all()))
 
 
 def _serialize_access_sources(access: EffectiveAccess, *, expose_identifiers: bool) -> list[ShareAccessSourceRead]:
@@ -621,88 +625,91 @@ async def get_share_summary(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ShareSummaryRead:
     """Return bounded direct grants and effective access for one subject."""
-    await _collaboration_contract(required=True)
-    try:
-        resource = await resolve_resource_for_share(
-            session,
-            resource_type=resource_type,
-            resource_id=resource_id,
+    async with authorization_admission(session) as admission:
+        await _collaboration_contract(required=True)
+        try:
+            resource = await resolve_resource_for_share(
+                admission,
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
+        except ShareManagementError as exc:
+            _raise_share_error(exc)
+        subject_id = subject_user_id or current_user.id
+        await _authorize_resource(
+            current_user=current_user,
+            action=ShareAction.READ,
+            resource=resource,
+            subject_user_id=subject_id,
         )
-    except ShareManagementError as exc:
-        _raise_share_error(exc)
-    subject_id = subject_user_id or current_user.id
-    await _authorize_resource(
-        current_user=current_user,
-        action=ShareAction.READ,
-        resource=resource,
-        subject_user_id=subject_id,
-    )
-    actor = await load_active_user(session, current_user.id)
-    subject = await load_active_user(session, subject_id)
-    if actor is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
-    if subject is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
-    can_manage = external_access_allows(ShareAction.CREATE.value) and await user_can_manage_resource_shares(
-        session,
-        user=actor,
-        resource=resource,
-        share_action=ShareAction.CREATE.value,
-        superuser_bypass=actor_can_administer_platform(actor),
-    )
-    if subject_id != actor.id and not can_manage:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+        actor = await load_active_user(admission, current_user.id)
+        subject = await load_active_user(admission, subject_id)
+        if actor is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
+        if subject is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+        can_manage = external_access_allows(ShareAction.CREATE.value) and await user_can_manage_resource_shares(
+            admission,
+            user=actor,
+            resource=resource,
+            share_action=ShareAction.CREATE.value,
+            superuser_bypass=actor_can_administer_platform(actor),
+        )
+        if subject_id != actor.id and not can_manage:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
 
-    grants = select(AuthzShare).where(
-        col(AuthzShare.resource_type) == resource.resource_type,
-        col(AuthzShare.resource_id) == resource.resource_id,
-    )
-    if not can_manage:
-        team_ids = await active_team_ids_for_user(session, subject_id)
-        predicates = [and_(col(AuthzShare.scope) == ShareScope.USER.value, col(AuthzShare.target_id) == subject_id)]
-        if team_ids:
-            predicates.append(
-                and_(col(AuthzShare.scope) == ShareScope.TEAM.value, col(AuthzShare.target_id).in_(team_ids))
-            )
-        grants = grants.where(or_(*predicates))
-    rows = list(
-        (
-            await session.exec(
-                grants.order_by(col(AuthzShare.created_at).desc(), col(AuthzShare.id)).offset(offset).limit(limit + 1)
-            )
-        ).all()
-    )
-    has_more = len(rows) > limit
-    rows = rows[:limit]
-    access = await effective_access(session, user_id=subject_id, resource=resource)
-    inherited = any(source.kind.startswith("inherited_") for source in access.sources)
-    additional_warning = None
-    if len(access.sources) > 1:
-        additional_warning = "Additional access sources may remain after one grant is changed or removed."
-    legacy_public = False
-    if can_manage and resource.resource_type == "flow":
-        flow = await session.get(Flow, resource.resource_id)
-        legacy_public = flow is not None and flow.access_type == AccessTypeEnum.PUBLIC
-    administrative = any(source.kind == "role" or "delete" in source.actions for source in access.sources)
-    return ShareSummaryRead(
-        resource_type=cast("Literal['flow', 'project']", resource.resource_type),
-        resource_id=resource.resource_id,
-        display_name=resource.display_name,
-        subject_user_id=subject_id,
-        caller_is_owner=resource.owner_id == actor.id,
-        can_manage_shares=can_manage,
-        direct_grants=await _serialize_shares(session, rows),
-        effective_access=ShareEffectiveAccessRead(
-            actions=sorted(access.actions),
-            sources=_serialize_access_sources(access, expose_identifiers=can_manage),
-        ),
-        inherited_from_project=inherited,
-        additional_access_warning=additional_warning,
-        legacy_public_access=legacy_public,
-        administrative_grant_present=administrative,
-        has_more=has_more,
-        next_offset=offset + limit if has_more else None,
-    )
+        grants = select(AuthzShare).where(
+            col(AuthzShare.resource_type) == resource.resource_type,
+            col(AuthzShare.resource_id) == resource.resource_id,
+        )
+        if not can_manage:
+            team_ids = await active_team_ids_for_user(admission, subject_id)
+            predicates = [and_(col(AuthzShare.scope) == ShareScope.USER.value, col(AuthzShare.target_id) == subject_id)]
+            if team_ids:
+                predicates.append(
+                    and_(col(AuthzShare.scope) == ShareScope.TEAM.value, col(AuthzShare.target_id).in_(team_ids))
+                )
+            grants = grants.where(or_(*predicates))
+        rows = list(
+            (
+                await admission.exec(
+                    grants.order_by(col(AuthzShare.created_at).desc(), col(AuthzShare.id))
+                    .offset(offset)
+                    .limit(limit + 1)
+                )
+            ).all()
+        )
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        access = await effective_access(admission, user_id=subject_id, resource=resource)
+        inherited = any(source.kind.startswith("inherited_") for source in access.sources)
+        additional_warning = None
+        if len(access.sources) > 1:
+            additional_warning = "Additional access sources may remain after one grant is changed or removed."
+        legacy_public = False
+        if can_manage and resource.resource_type == "flow":
+            flow = await admission.get(Flow, resource.resource_id)
+            legacy_public = flow is not None and flow.access_type == AccessTypeEnum.PUBLIC
+        administrative = any(source.kind == "role" or "delete" in source.actions for source in access.sources)
+        return ShareSummaryRead(
+            resource_type=cast("Literal['flow', 'project']", resource.resource_type),
+            resource_id=resource.resource_id,
+            display_name=resource.display_name,
+            subject_user_id=subject_id,
+            caller_is_owner=resource.owner_id == actor.id,
+            can_manage_shares=can_manage,
+            direct_grants=await _serialize_shares(admission, rows),
+            effective_access=ShareEffectiveAccessRead(
+                actions=sorted(access.actions),
+                sources=_serialize_access_sources(access, expose_identifiers=can_manage),
+            ),
+            inherited_from_project=inherited,
+            additional_access_warning=additional_warning,
+            legacy_public_access=legacy_public,
+            administrative_grant_present=administrative,
+            has_more=has_more,
+            next_offset=offset + limit if has_more else None,
+        )
 
 
 @router.get("/{share_id}", response_model=ShareRead)
@@ -712,31 +719,32 @@ async def get_share(
     session: DbSession,
     response: Response,
 ) -> ShareRead:
-    try:
-        row, resource = await get_share_for_authorization(session, share_id)
-    except ShareManagementError as exc:
-        _raise_share_error(exc)
-    await _authorize_resource(current_user=current_user, action=ShareAction.READ, resource=resource, share=row)
-    if not await _user_can_see_share(
-        session,
-        row=row,
-        user_id=current_user.id,
-        resource_owner_id=resource.owner_id,
-    ):
-        actor = await load_active_user(session, current_user.id)
-        if actor is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
-        if not await user_can_manage_resource_shares(
-            session,
-            user=actor,
-            resource=resource,
-            share_action=ShareAction.READ.value,
-            superuser_bypass=actor_can_administer_platform(actor),
+    async with authorization_admission(session) as admission:
+        try:
+            row, resource = await get_share_for_authorization(admission, share_id)
+        except ShareManagementError as exc:
+            _raise_share_error(exc)
+        await _authorize_resource(current_user=current_user, action=ShareAction.READ, resource=resource, share=row)
+        if not await _user_can_see_share(
+            admission,
+            row=row,
+            user_id=current_user.id,
+            resource_owner_id=resource.owner_id,
         ):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
-    serialized = (await _serialize_shares(session, [row]))[0]
-    response.headers["ETag"] = strong_etag("share", row.id, row.revision)
-    return serialized
+            actor = await load_active_user(admission, current_user.id)
+            if actor is None:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
+            if not await user_can_manage_resource_shares(
+                admission,
+                user=actor,
+                resource=resource,
+                share_action=ShareAction.READ.value,
+                superuser_bypass=actor_can_administer_platform(actor),
+            ):
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
+        serialized = (await _serialize_shares(admission, [row]))[0]
+        response.headers["ETag"] = strong_etag("share", row.id, row.revision)
+        return serialized
 
 
 @router.patch("/{share_id}", response_model=ShareRead)
@@ -755,6 +763,7 @@ async def update_share(
     contract = await _collaboration_contract(required=stored.scope in {ShareScope.USER.value, ShareScope.TEAM.value})
 
     async def operation(_attempt: int):
+        await get_authorization_service().acquire_share_mutation_lock(session=session)
         try:
             current_share, resource = await get_share_for_authorization(session, share_id)
         except ShareManagementError as exc:
@@ -810,6 +819,7 @@ async def delete_share(
     contract = await _collaboration_contract(required=stored.scope in {ShareScope.USER.value, ShareScope.TEAM.value})
 
     async def operation(_attempt: int):
+        await get_authorization_service().acquire_share_mutation_lock(session=session)
         try:
             current_share, resource = await get_share_for_authorization(session, share_id)
         except ShareManagementError as exc:

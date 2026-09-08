@@ -295,6 +295,7 @@ async def _delete_local_deployment_row(
     deployment_id: UUID,
     user_id: UUID,
     resource_key: str,
+    actor_id: UUID | None = None,
 ) -> None:
     """Delete the local deployment row, retrying once if the commit fails.
 
@@ -307,9 +308,29 @@ async def _delete_local_deployment_row(
     means the local row was already gone or the owner scope was wrong — raise
     404 rather than returning success.
     """
-    try:
+
+    async def delete_and_commit() -> None:
+        from langflow.services.authorization.fetch import authorization_admission, load_mutation_actor
+        from langflow.services.deps import get_authorization_service
+
+        await get_authorization_service().acquire_resource_mutation_lock(session=session)
+        if actor_id is not None:
+            actor = await load_mutation_actor(session, actor_id)
+            async with authorization_admission(session):
+                try:
+                    await ensure_deployment_permission(
+                        actor,
+                        DeploymentAction.DELETE,
+                        deployment_id=deployment_id,
+                        deployment_user_id=user_id,
+                    )
+                except HTTPException as exc:
+                    raise deny_to_404(exc, detail="Deployment not found.") from exc
         await _delete_deployment_strictly_or_raise(session=session, user_id=user_id, deployment_id=deployment_id)
         await session.commit()
+
+    try:
+        await delete_and_commit()
     except HTTPException:
         raise
     except Exception:  # noqa: BLE001
@@ -321,8 +342,7 @@ async def _delete_local_deployment_row(
             exc_info=True,
         )
         try:
-            await _delete_deployment_strictly_or_raise(session=session, user_id=user_id, deployment_id=deployment_id)
-            await session.commit()
+            await delete_and_commit()
         except HTTPException:
             raise
         except Exception as exc:
@@ -1771,6 +1791,7 @@ async def delete_deployment(
         deployment_id=deployment_row.id,
         user_id=deployment_row.user_id,
         resource_key=deployment_row.resource_key,
+        actor_id=current_user.id,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
