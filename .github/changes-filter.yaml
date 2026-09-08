@@ -172,6 +172,7 @@ authz-sharing:
   - "src/backend/base/langflow/utils/flow_secrets.py"
   - "src/backend/tests/**/authorization/**"
   - "src/backend/tests/conftest.py"
+  - "src/backend/tests/unit/api/test_s3_endpoints.py"
   - "src/backend/tests/unit/utils/test_flow_secrets.py"
   - "src/backend/tests/unit/api/v1/test_deployment_guard_retry.py"
   - "src/backend/tests/unit/api/v1/test_deployment_route_handlers.py"

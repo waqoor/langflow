@@ -206,6 +206,7 @@ def test_authz_path_filter_covers_every_contract_layer():
         "src/lfx/src/lfx/services/manager.py",
         "src/lfx/tests/unit/services/test_service_manager.py",
         "src/backend/tests/conftest.py",
+        "src/backend/tests/unit/api/test_s3_endpoints.py",
         "src/backend/tests/unit/api/v1/test_deployment_guard_retry.py",
         "src/backend/tests/unit/api/v1/test_deployment_route_handlers.py",
         "src/backend/tests/unit/api/v1/test_deployment_sync.py",
