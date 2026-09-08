@@ -1,4 +1,10 @@
-import { type Dispatch, ReactNode, type SetStateAction, useState } from "react";
+import {
+  type Dispatch,
+  ReactNode,
+  type SetStateAction,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { useHref } from "react-router-dom";
 import IconComponent from "@/components/common/genericIconComponent";
@@ -42,6 +48,7 @@ export default function PublishDropdown({
   const domain = window.location.origin + location;
   const [openEmbedModal, setOpenEmbedModal] = useState(false);
   const [openShareDialog, setOpenShareDialog] = useState(false);
+  const shareTriggerRef = useRef<HTMLButtonElement>(null);
   const currentFlow = useFlowsManagerStore((state) => state.currentFlow);
   const flowId = currentFlow?.id;
   const flowName = currentFlow?.name;
@@ -122,6 +129,7 @@ export default function PublishDropdown({
             size="md"
             className="!px-2.5 font-normal"
             data-testid="publish-button"
+            ref={shareTriggerRef}
           >
             {t("misc.share")}
             <IconComponent name="ChevronDown" className="!h-5 !w-5" />
@@ -254,6 +262,7 @@ export default function PublishDropdown({
           resourceType="flow"
           resourceId={flowId}
           resourceName={flowName}
+          returnFocusRef={shareTriggerRef}
         />
       )}
       <ApiModal open={openApiModal} setOpen={setOpenApiModal}>

@@ -72,8 +72,11 @@ export function TeamDetails({
       aria-labelledby={`team-heading-${team.id}`}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 id={`team-heading-${team.id}`} className="text-xl font-semibold">
+        <div className="min-w-0">
+          <h2
+            id={`team-heading-${team.id}`}
+            className="break-words text-xl font-semibold"
+          >
             {team.team_name}
           </h2>
           <div className="mt-2 flex flex-wrap gap-2">

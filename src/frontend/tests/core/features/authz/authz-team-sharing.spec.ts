@@ -98,6 +98,64 @@ async function responseJson<T>(
   return (await response.json()) as T;
 }
 
+async function expectTeamPageReflow(page: Page, testId: string): Promise<void> {
+  const surface = page.getByTestId(testId);
+  const search = surface.getByRole("textbox", {
+    name: "Search teams",
+    exact: true,
+  });
+  await search.fill("Authz");
+  await expect(
+    surface.locator("label").filter({ hasText: "Search teams" }),
+  ).toBeVisible();
+  await search.clear();
+  await expect(
+    surface.getByRole("textbox", { name: "Team name", exact: true }),
+  ).toBeVisible();
+
+  const viewport = page.viewportSize();
+  const fontSize = await page.evaluate(
+    () => document.documentElement.style.fontSize,
+  );
+  try {
+    for (const state of [
+      { width: 320, fontSize: "" },
+      { width: 1280, fontSize: "200%" },
+    ]) {
+      await page.setViewportSize({ width: state.width, height: 900 });
+      await page.evaluate((size) => {
+        document.documentElement.style.fontSize = size;
+      }, state.fontSize);
+      await expect
+        .poll(() =>
+          surface.evaluate((element) => {
+            const bounds = element.getBoundingClientRect();
+            return (
+              bounds.left >= -1 &&
+              bounds.right <= window.innerWidth + 1 &&
+              element.scrollWidth <= element.clientWidth + 1 &&
+              Array.from(
+                element.querySelectorAll("button, input, textarea"),
+              ).every((control) => {
+                const rect = control.getBoundingClientRect();
+                return (
+                  !control.getClientRects().length ||
+                  (rect.left >= -1 && rect.right <= window.innerWidth + 1)
+                );
+              })
+            );
+          }),
+        )
+        .toBe(true);
+    }
+  } finally {
+    await page.evaluate((size) => {
+      document.documentElement.style.fontSize = size;
+    }, fontSize);
+    if (viewport) await page.setViewportSize(viewport);
+  }
+}
+
 async function login(
   browser: Browser,
   username: string,
@@ -473,6 +531,7 @@ test.describe("registered team and resource sharing", () => {
         timeout: TIMEOUTS.standard,
       });
       await a11yPage.runA11yScan("authz-admin-teams");
+      await expectTeamPageReflow(a11yPage, "admin-teams-page");
     },
   );
 
@@ -655,6 +714,32 @@ test.describe("registered team and resource sharing", () => {
         a11yPage.getByTestId(`share-grant-${dialogShare.id}`),
       ).toBeVisible();
       await a11yPage.runA11yScan("authz-resource-share-dialog");
+      await a11yPage.getByLabel("Search recipients").focus();
+      const shareDialog = a11yPage.getByTestId("resource-share-dialog");
+      const recipientType = shareDialog.getByRole("radiogroup", {
+        name: "Recipient type",
+      });
+      await a11yPage.keyboard.press("Shift+Tab");
+      await expect(
+        recipientType.getByRole("radio", { name: "User", exact: true }),
+      ).toBeFocused();
+      await a11yPage.keyboard.press("Shift+Tab");
+      await expect(
+        shareDialog.getByRole("button", { name: "Close", exact: true }).last(),
+      ).toBeFocused();
+      await a11yPage.keyboard.press("Tab");
+      await a11yPage.keyboard.press("ArrowRight", { delay: 100 });
+      await expect(
+        recipientType.getByRole("radio", { name: "Team", exact: true }),
+      ).toBeChecked();
+      await a11yPage.keyboard.press("ArrowLeft", { delay: 100 });
+      await expect(
+        recipientType.getByRole("radio", { name: "User", exact: true }),
+      ).toBeChecked();
+      await a11yPage.getByLabel("Search recipients").focus();
+      await a11yPage.keyboard.press("Escape");
+      await expect(a11yPage.getByTestId("resource-share-dialog")).toBeHidden();
+      await expect(a11yPage.getByTestId("publish-button")).toBeFocused();
     },
   );
 
@@ -731,6 +816,7 @@ test.describe("registered team and resource sharing", () => {
         timeout: TIMEOUTS.standard,
       });
       await a11yPage.runA11yScan("authz-member-teams");
+      await expectTeamPageReflow(a11yPage, "teams-page");
     },
   );
 

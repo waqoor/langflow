@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type RefObject, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import ForwardedIconComponent from "@/components/common/genericIconComponent";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -23,6 +23,7 @@ interface ResourceShareDialogProps {
   resourceType: ShareResourceType;
   resourceId: string;
   resourceName?: string;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
 const directGrantPageSize = 50;
@@ -33,6 +34,7 @@ export function ResourceShareDialog({
   resourceType,
   resourceId,
   resourceName,
+  returnFocusRef,
 }: ResourceShareDialogProps) {
   const { t } = useTranslation();
   const [grantOffset, setGrantOffset] = useState(0);
@@ -73,6 +75,13 @@ export function ResourceShareDialog({
       <DialogContent
         className="max-h-[88vh] max-w-2xl overflow-y-auto"
         data-testid="resource-share-dialog"
+        onCloseAutoFocus={(event) => {
+          const trigger = returnFocusRef?.current;
+          if (trigger?.isConnected) {
+            event.preventDefault();
+            trigger.focus();
+          }
+        }}
       >
         <DialogHeader>
           <DialogTitle>

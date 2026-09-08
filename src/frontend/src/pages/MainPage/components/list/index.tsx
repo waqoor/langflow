@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
 import ForwardedIconComponent from "@/components/common/genericIconComponent";
@@ -49,6 +49,7 @@ const ListComponent = ({
   const [openSettings, setOpenSettings] = useState(false);
   const [openExportModal, setOpenExportModal] = useState(false);
   const [openShareDialog, setOpenShareDialog] = useState(false);
+  const shareTriggerRef = useRef<HTMLButtonElement>(null);
   const isComponent = flowData.is_component ?? false;
 
   const { getIcon } = useGetTemplateStyle(flowData);
@@ -223,6 +224,7 @@ const ListComponent = ({
                 variant="ghost"
                 size="iconMd"
                 data-testid="home-dropdown-menu"
+                ref={shareTriggerRef}
                 className="pointer-events-auto group"
                 aria-label={t("flows.moreOptions", { name: flowData.name })}
               >
@@ -258,6 +260,7 @@ const ListComponent = ({
           resourceType="flow"
           resourceId={flowData.id}
           resourceName={flowData.name}
+          returnFocusRef={shareTriggerRef}
         />
       )}
       {openDelete && (

@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useGetAuthorizationCapabilities } from "@/controllers/API/queries/authorization";
 import { useGetTeams } from "@/controllers/API/queries/teams";
 import { cn } from "@/utils/utils";
@@ -12,6 +13,7 @@ import { TeamDetails } from "./team-details";
 
 export function TeamManagement({ adminMode }: { adminMode: boolean }) {
   const { t } = useTranslation();
+  const searchId = useId();
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [offset, setOffset] = useState(0);
@@ -71,7 +73,7 @@ export function TeamManagement({ adminMode }: { adminMode: boolean }) {
 
   return (
     <main
-      className="flex h-full min-h-0 flex-col gap-5 p-6"
+      className="flex h-full min-h-0 w-full min-w-0 flex-col gap-5 p-6"
       data-testid={adminMode ? "admin-teams-page" : "teams-page"}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -89,13 +91,15 @@ export function TeamManagement({ adminMode }: { adminMode: boolean }) {
           </Button>
         )}
       </div>
-      <div className="grid min-h-0 flex-1 gap-5 lg:grid-cols-[minmax(18rem,0.8fr)_minmax(26rem,1.7fr)]">
+      <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-5 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.7fr)]">
         <section
-          className="flex min-h-0 flex-col rounded-xl border bg-background"
+          className="flex min-h-0 min-w-0 flex-col rounded-xl border bg-background"
           aria-label={t("teams.title.member")}
         >
-          <div className="border-b p-3">
+          <div className="space-y-1.5 border-b p-3">
+            <Label htmlFor={searchId}>{t("teams.search")}</Label>
             <Input
+              id={searchId}
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder={t("teams.search")}
@@ -184,7 +188,7 @@ export function TeamManagement({ adminMode }: { adminMode: boolean }) {
           </div>
         </section>
         <section
-          className="min-h-0 overflow-y-auto rounded-xl border bg-background p-5"
+          className="min-h-0 min-w-0 overflow-y-auto rounded-xl border bg-background p-5"
           aria-live="polite"
         >
           {selectedTeamId ? (

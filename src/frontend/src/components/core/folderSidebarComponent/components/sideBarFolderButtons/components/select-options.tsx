@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import IconComponent from "@/components/common/genericIconComponent";
 import ShadTooltip from "@/components/common/shadTooltipComponent";
@@ -33,6 +33,7 @@ export const SelectOptions = ({
 }) => {
   const { t } = useTranslation();
   const [openShareDialog, setOpenShareDialog] = useState(false);
+  const shareTriggerRef = useRef<HTMLButtonElement>(null);
   const { can } = usePermissions();
   const canRename = can(item.id, "write");
   const canDownload = can(item.id, "read");
@@ -65,6 +66,7 @@ export const SelectOptions = ({
               size="icon"
               className="h-6 w-6 min-h-[24px] min-w-[24px]"
               id={`options-trigger-${item.id}`}
+              ref={shareTriggerRef}
               data-testid={`more-options-button_${item.id}`}
               aria-label={t("folder.optionsFor", { name: displayName })}
               onClick={(e) => e.stopPropagation()}
@@ -134,6 +136,7 @@ export const SelectOptions = ({
           resourceType="project"
           resourceId={item.id!}
           resourceName={displayName}
+          returnFocusRef={shareTriggerRef}
         />
       )}
     </>

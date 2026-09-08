@@ -92,13 +92,20 @@ export function ShareRecipientForm({
         onValueChange={(value) => setRecipientType(value as ShareRecipientType)}
         className="grid grid-cols-2"
         aria-label={t("sharing.recipientType")}
+        // Let the selected radio define the dialog's first tab stop. The
+        // roving-focus wrapper otherwise hides that edge from the focus trap
+        // when Shift+Tab leaves the first radio.
+        tabIndex={-1}
       >
         {(["user", "team"] as ShareRecipientType[]).map((kind) => (
           <Label
             key={kind}
             className="flex cursor-pointer items-center gap-2 rounded-md border p-3"
           >
-            <RadioGroupItem value={kind} />
+            <RadioGroupItem
+              value={kind}
+              tabIndex={recipientType === kind ? 0 : -1}
+            />
             {t(`sharing.recipient.${kind}`)}
           </Label>
         ))}

@@ -577,7 +577,8 @@ class CasbinAuthorizationService(BaseAuthorizationService):
                         {
                             rule.v3
                             for rule in source_rules & present
-                            if rule.v3 in allowed
+                            if rule.v3 is not None
+                            and rule.v3 in allowed
                             and rule.v1 in domains
                             and rule.v2 in {f"{resource_type}/{resource_id}", f"{resource_type}/*"}
                             and enforcer.enforce(f"user:{user_id}", rule.v1, f"{resource_type}/{resource_id}", rule.v3)
