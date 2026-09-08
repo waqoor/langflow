@@ -154,6 +154,29 @@ async function expectTeamPageReflow(page: Page, testId: string): Promise<void> {
     }, fontSize);
     if (viewport) await page.setViewportSize(viewport);
   }
+
+  const activeSwitch = surface.getByRole("switch", { name: "Team active" });
+  if (await activeSwitch.count()) {
+    try {
+      for (const colorScheme of ["light", "dark"] as const) {
+        await page.emulateMedia({ forcedColors: "active", colorScheme });
+        await expect
+          .poll(() =>
+            activeSwitch.locator("span").evaluate((thumb) => {
+              const style = getComputedStyle(thumb);
+              return (
+                Number.parseFloat(style.borderTopWidth) >= 1 &&
+                style.borderTopStyle === "solid" &&
+                style.borderTopColor !== style.backgroundColor
+              );
+            }),
+          )
+          .toBe(true);
+      }
+    } finally {
+      await page.emulateMedia({ forcedColors: null, colorScheme: null });
+    }
+  }
 }
 
 async function login(

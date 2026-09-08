@@ -154,6 +154,7 @@ export function TeamDetails({
           <div className="flex items-center gap-3">
             <Switch
               id={`team-active-${team.id}`}
+              className="forced-colors:[&>span]:border forced-colors:[&>span]:border-[ButtonText]"
               checked={team.is_active}
               disabled={updateTeam.isPending}
               onCheckedChange={(checked) => {
