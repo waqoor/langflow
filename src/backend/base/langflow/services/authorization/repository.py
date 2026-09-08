@@ -351,14 +351,6 @@ async def resource_id_batches(session: AsyncSession, *, resource_type: str) -> A
         last_id = batch[-1]
 
 
-async def owned_resource_ids(session: AsyncSession, *, user_id: UUID, resource_type: str) -> tuple[UUID, ...]:
-    """Read canonical ownership IDs for the selected service's visibility projection."""
-    model = _MODEL_BY_RESOURCE.get(resource_type)
-    if model is None:
-        return ()
-    return tuple((await session.exec(select(model.id).where(model.user_id == user_id).order_by(model.id))).all())
-
-
 async def resolve_resources(
     session: AsyncSession,
     *,

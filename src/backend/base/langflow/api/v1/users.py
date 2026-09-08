@@ -24,6 +24,7 @@ from langflow.services.authorization.audit import (
     audit_decision,
     stage_audit_decision,
 )
+from langflow.services.authorization.fetch import load_mutation_actor
 from langflow.services.authorization.lifecycle import (
     acquire_identity_mutation_lock,
     owned_resource_impact,
@@ -63,7 +64,12 @@ async def _audit_deny(
     obj: str,
     status_code: int,
     reason: str,
+    session: DbSession | None = None,
 ) -> None:
+    if session is not None:
+        # A denied mutation must release its writer lock before the independent
+        # durable audit writer persists the denial.
+        await session.rollback()
     await audit_decision(
         user_id=user_id,
         action=action,
@@ -281,10 +287,16 @@ async def patch_user(
     authorization_service = get_authorization_service()
     # Pre-read lock hint; canonical user state may produce a different staged kind.
     possible_lifecycle_kind: AuthorizationMutationKind | None = None
-    if user_update.is_active is False:
-        possible_lifecycle_kind = AuthorizationMutationKind.USER_DISABLED
-    elif user_update.is_superuser is False:
-        possible_lifecycle_kind = AuthorizationMutationKind.USER_SUPERUSER_DEMOTED
+    if user_update.is_active is not None:
+        possible_lifecycle_kind = (
+            AuthorizationMutationKind.USER_ENABLED if user_update.is_active else AuthorizationMutationKind.USER_DISABLED
+        )
+    elif user_update.is_superuser is not None:
+        possible_lifecycle_kind = (
+            AuthorizationMutationKind.USER_SUPERUSER_PROMOTED
+            if user_update.is_superuser
+            else AuthorizationMutationKind.USER_SUPERUSER_DEMOTED
+        )
     lifecycle_lock_context: UserTeamLifecycleLockContext | None = None
     if possible_lifecycle_kind is not None:
 
@@ -307,6 +319,26 @@ async def patch_user(
             )
         except TeamManagementError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    else:
+
+        async def acquire_update_lock(_attempt: int) -> None:
+            await authorization_service.acquire_resource_mutation_lock(session=session)
+
+        await run_with_lock_retry(acquire_update_lock, session=session, description=f"prepare user update {user_id}")
+
+    # Authentication precedes the writer lock. A concurrent demotion or disable
+    # must take effect before this request can update another identity.
+    actor = await load_mutation_actor(session, user.id)
+    if not actor_can_administer_platform(actor) and (user.id != user_id or user_update.is_superuser or update_password):
+        await _audit_deny(
+            user_id=user.id,
+            action="user:update",
+            obj=f"user:{user_id}",
+            status_code=403,
+            reason="platform_authority_revoked",
+            session=session,
+        )
+        raise HTTPException(status_code=403, detail="Permission denied")
 
     user_db = (
         lifecycle_lock_context.users.get(user_id)
@@ -327,8 +359,12 @@ async def patch_user(
         next_is_superuser = user_db.is_superuser if user_update.is_superuser is None else user_update.is_superuser
         if user_db.is_active and not next_is_active:
             lifecycle_kind = AuthorizationMutationKind.USER_DISABLED
+        elif not user_db.is_active and next_is_active:
+            lifecycle_kind = AuthorizationMutationKind.USER_ENABLED
         elif user_db.is_superuser and not next_is_superuser:
             lifecycle_kind = AuthorizationMutationKind.USER_SUPERUSER_DEMOTED
+        elif not user_db.is_superuser and next_is_superuser:
+            lifecycle_kind = AuthorizationMutationKind.USER_SUPERUSER_PROMOTED
         else:
             lifecycle_kind = None
 
@@ -372,6 +408,7 @@ async def patch_user(
                 obj=f"user:{user_id}",
                 status_code=exc.status_code,
                 reason="update_rejected",
+                session=session,
             )
             raise
         if lifecycle_mutation is not None and lifecycle_mutation.kind is AuthorizationMutationKind.USER_DISABLED:
@@ -425,6 +462,7 @@ async def patch_user(
         obj=f"user:{user_id}",
         status_code=404,
         reason="user_not_found",
+        session=session,
     )
     raise HTTPException(status_code=404, detail="User not found")
 
@@ -507,6 +545,17 @@ async def delete_user(
         )
     except TeamManagementError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    actor = await load_mutation_actor(session, actor_user_id)
+    if not actor_can_administer_platform(actor):
+        await _audit_deny(
+            user_id=actor_user_id,
+            action="user:delete",
+            obj=f"user:{user_id}",
+            status_code=403,
+            reason="platform_authority_revoked",
+            session=session,
+        )
+        raise HTTPException(status_code=403, detail="Permission denied")
     user_db = lifecycle_lock_context.users.get(user_id)
     if not user_db:
         await _audit_deny(
@@ -515,6 +564,7 @@ async def delete_user(
             obj=f"user:{user_id}",
             status_code=404,
             reason="user_not_found",
+            session=session,
         )
         raise HTTPException(status_code=404, detail="User not found")
 

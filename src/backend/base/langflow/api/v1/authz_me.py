@@ -3,9 +3,8 @@
 The UI calls this once per page load with the list of resource IDs it wants to
 render and learns which actions to enable/disable per resource — without making
 a 403-triggering request for each one. Backed by
-:meth:`BaseAuthorizationService.get_effective_permissions`. Full Langflow uses
-the native canonical-table evaluator; a substituted service must report only
-the capabilities it actually enforces.
+:meth:`BaseAuthorizationService.get_effective_permissions`. The registered
+service must report only the capabilities it actually enforces.
 """
 
 from __future__ import annotations

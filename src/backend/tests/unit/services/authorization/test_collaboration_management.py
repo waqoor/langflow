@@ -775,7 +775,9 @@ async def test_native_visibility_scope_matches_direct_enforcement_without_enumer
     assert scope is not None
     assert scope.all_resources is False
     assert set(scope.resource_ids) == {direct_flow.id, shared_project_flow.id}
-    assert set(scope.project_ids) == {actor_project.id, shared_project.id}
+    assert set(scope.project_ids) == {shared_project.id}
+    assert scope.owner_id == actor.id
+    assert scope.project_owner_id == actor.id
     assert scope.workspace_ids == (workspace_id,)
     assert actor_project_flow.id not in scope.resource_ids
     assert workspace_flow.id not in scope.resource_ids
@@ -793,6 +795,9 @@ async def test_native_visibility_scope_matches_direct_enforcement_without_enumer
             resource_id=flow.id,
             workspace_id=flow.workspace_id,
             project_id=flow.folder_id,
+            owner_id=flow.user_id,
+            project_owner_id=actor.id if flow.folder_id == actor_project.id else owner.id,
+            canonical_context_valid=True,
             visibility=scope,
         )
         assert prefilter_allowed is directly_allowed
@@ -810,6 +815,9 @@ async def test_native_visibility_scope_matches_direct_enforcement_without_enumer
         resource_id=actor_project_flow.id,
         workspace_id=actor_project_flow.workspace_id,
         project_id=actor_project_flow.folder_id,
+        owner_id=actor_project_flow.user_id,
+        project_owner_id=actor.id,
+        canonical_context_valid=True,
         visibility=delete_scope,
     )
     assert not await collaboration_db.service.enforce(
@@ -878,14 +886,11 @@ async def test_superuser_bypass_still_requires_supported_actions_and_resolved_re
         ],
     )
     assert decisions == [True, False, False, False]
-    assert (
-        await service.get_resource_visibility(
-            user_id=platform.id,
-            resource_type="flow",
-            act="unknown",
-        )
-        == ResourceVisibilityScope()
-    )
+    assert await service.get_resource_visibility(
+        user_id=platform.id,
+        resource_type="flow",
+        act="unknown",
+    ) == ResourceVisibilityScope(require_canonical_context=True)
 
 
 @pytest.mark.asyncio

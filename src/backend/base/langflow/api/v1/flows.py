@@ -1415,7 +1415,7 @@ async def upload_file(
             raise HTTPException(status_code=422, detail="Invalid upload: duplicate flow IDs are not allowed")
 
         # Lock only rows this request is permitted to resolve. Disabled/legacy mode
-        # remains owner-scoped; the native enforcer may widen the candidate fetch,
+        # remains owner-scoped; the registered service may widen the candidate fetch,
         # after which every row is still authorized below.
         existing_flows_by_id: dict[UUID, Flow] = {}
         if requested_ids:
@@ -1707,32 +1707,33 @@ async def download_multiple_file(
     # Widen fetch when cross-user READ is supported; else owner-scoped.
     from langflow.services.deps import get_authorization_service
 
-    authz = get_authorization_service()
-    base_stmt = select(Flow).where(col(Flow.id).in_(flow_ids))  # type: ignore[attr-defined]
-    if await authz.supports_cross_user_fetch() and await authz.is_enabled():
-        stmt = base_stmt
-    else:
-        stmt = base_stmt.where(and_(Flow.user_id == user.id))
-    flows = (await db.exec(stmt)).all()
+    async with authorization_admission(db) as admission:
+        authz = get_authorization_service()
+        base_stmt = select(Flow).where(col(Flow.id).in_(flow_ids))  # type: ignore[attr-defined]
+        if await authz.supports_cross_user_fetch() and await authz.is_enabled():
+            stmt = base_stmt
+        else:
+            stmt = base_stmt.where(and_(Flow.user_id == user.id))
+        flows = (await admission.exec(stmt)).all()
 
-    if not flows:
-        raise HTTPException(status_code=404, detail="No flows found.")
+        if not flows:
+            raise HTTPException(status_code=404, detail="No flows found.")
 
-    for flow in flows:
-        # Plugin deny → 404 (UUID privacy).
-        try:
-            await ensure_flow_permission(
-                user,
-                FlowAction.READ,
-                flow_id=flow.id,
-                flow_user_id=flow.user_id,
-                workspace_id=flow.workspace_id,
-                folder_id=flow.folder_id,
-            )
-        except HTTPException as exc:
-            raise deny_to_404(exc, detail="No flows found.") from exc
+        for flow in flows:
+            # Plugin deny → 404 (UUID privacy).
+            try:
+                await ensure_flow_permission(
+                    user,
+                    FlowAction.READ,
+                    flow_id=flow.id,
+                    flow_user_id=flow.user_id,
+                    workspace_id=flow.workspace_id,
+                    folder_id=flow.folder_id,
+                )
+            except HTTPException as exc:
+                raise deny_to_404(exc, detail="No flows found.") from exc
 
-    return _build_flows_download_response(flows)
+        return _build_flows_download_response(flows)
 
 
 # 5 minutes

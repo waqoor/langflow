@@ -974,7 +974,7 @@ async def ensure_resource_share_administration(
 ) -> None:
     """Authorize share administration against the exact stored resource.
 
-    A global ``share:*`` object is insufficient on its own. The native service
+    A global ``share:*`` object is insufficient on its own. The registered service
     uses these server-resolved identifiers to evaluate ownership and scoped
     role authority, while the guard retains external-credential and owner
     override behavior.

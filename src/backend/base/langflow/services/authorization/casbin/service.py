@@ -46,7 +46,6 @@ from langflow.services.authorization.repository import (
     invalid_team_ids,
     load_active_user,
     load_resource,
-    owned_resource_ids,
     resolve_resources,
     resource_id_batches,
     supported_actions,
@@ -447,17 +446,17 @@ class CasbinAuthorizationService(BaseAuthorizationService):
         if not await self.is_enabled():
             return None
         if not external_access_allows(act) or act not in policy_actions(resource_type):
-            return ResourceVisibilityScope()
+            return ResourceVisibilityScope(require_canonical_context=True)
         try:
             validate_domain(domain)
         except (ValueError, TypeError):
-            return ResourceVisibilityScope()
+            return ResourceVisibilityScope(require_canonical_context=True)
         async with self.admission_context() as session:
             user = await load_active_user(session, user_id)
             if user is None:
-                return ResourceVisibilityScope()
+                return ResourceVisibilityScope(require_canonical_context=True)
             if user.is_superuser is True and self._superuser_bypass():
-                return ResourceVisibilityScope(all_resources=True)
+                return ResourceVisibilityScope(all_resources=True, require_canonical_context=True)
             rules = await store.load_rules(session, user_id=user_id)
             enforcer = store.enforcer_for(rules)
             # Project only this model's finite, exact-domain policies. Every
@@ -493,9 +492,6 @@ class CasbinAuthorizationService(BaseAuthorizationService):
                     workspace_ids=tuple(sorted(workspaces)),
                     project_ids=tuple(sorted(projects)),
                 )
-            exact_ids.update(await owned_resource_ids(session, user_id=user_id, resource_type=resource_type))
-            if resource_type == "flow" and act in project_flow_actions("admin"):
-                projects.update(await owned_resource_ids(session, user_id=user_id, resource_type="project"))
             # Concrete grants remain valid only for current canonical objects.
             candidates = sorted(exact_ids)
             allowed_ids: list[UUID] = []
@@ -514,6 +510,11 @@ class CasbinAuthorizationService(BaseAuthorizationService):
                 resource_ids=tuple(allowed_ids),
                 workspace_ids=tuple(sorted(workspaces)),
                 project_ids=tuple(sorted(projects)),
+                owner_id=user_id,
+                project_owner_id=(
+                    user_id if resource_type == "flow" and act in project_flow_actions("admin") else None
+                ),
+                require_canonical_context=True,
             )
 
     async def get_access_sources(

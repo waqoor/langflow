@@ -1,4 +1,4 @@
-"""Fail-closed capability discovery for the native collaboration contract."""
+"""Fail-closed capability discovery for the registered collaboration service."""
 
 from __future__ import annotations
 

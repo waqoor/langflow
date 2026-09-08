@@ -1,4 +1,4 @@
-"""Native Langflow authorization package with a replaceable service interface."""
+"""Langflow authorization package with a replaceable service interface."""
 
 from langflow.services.authorization.actions import (
     DeploymentAction,

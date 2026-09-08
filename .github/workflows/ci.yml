@@ -40,7 +40,7 @@ on:
         description: "Fork-authorized ARM64 runner for candidate Docker validation"
         required: false
         type: string
-        default: "ubuntu-24.04-arm"
+        default: '["self-hosted", "linux", "ARM64", "langflow-ai-arm64-40gb-ephemeral"]'
   workflow_dispatch:
     inputs:
       ref:
@@ -84,7 +84,7 @@ on:
         description: "Fork-authorized ARM64 runner for candidate Docker validation"
         required: false
         type: string
-        default: "ubuntu-24.04-arm"
+        default: '["self-hosted", "linux", "ARM64", "langflow-ai-arm64-40gb-ephemeral"]'
   pull_request:
     # ready_for_review matters: every job below is gated on the PR not being a draft, so a PR
     # opened as a draft and later marked ready has no run where that gate was ever true.
@@ -539,7 +539,7 @@ jobs:
     uses: ./.github/workflows/docker_test.yml
     with:
       ref: ${{ inputs.ref || github.ref }}
-      runs-on: ${{ inputs['docker-runs-on'] || 'ubuntu-24.04-arm' }}
+      runs-on: ${{ inputs['docker-runs-on'] || '["self-hosted", "linux", "ARM64", "langflow-ai-arm64-40gb-ephemeral"]' }}
 
   lint-design-md:
     needs: path-filter

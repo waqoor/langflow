@@ -1,4 +1,4 @@
-"""Pure grant and team-management rules for native collaboration.
+"""Shared grant vocabulary and team-management invariants for collaboration.
 
 These rules consume server-resolved state. They do not authenticate a caller,
 load grants, authorize a resource lookup, or replace transactional invariant

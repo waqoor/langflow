@@ -410,6 +410,9 @@ async def create_project(
                 project=project,
                 current_user=current_user,
             )
+            # Request-scope dependency cleanup may run after the HTTP response.
+            # Publish the project before another request uses its returned ID.
+            await session.commit()
             response.headers["ETag"] = strong_etag("project", created.id, created.edit_revision)
             return created
 
@@ -688,6 +691,11 @@ async def read_project(
                             resource_id=flow.id,
                             workspace_id=project.workspace_id,
                             project_id=flow.folder_id,
+                            owner_id=flow.user_id,
+                            project_owner_id=project.user_id,
+                            canonical_context_valid=(
+                                flow.folder_id == project.id and flow.workspace_id == project.workspace_id
+                            ),
                             visibility=visibility_scope,
                         )
                     ]
@@ -1158,6 +1166,7 @@ async def update_project(
                 if_match=if_match,
                 precondition_required=precondition_required,
             )
+            await session.commit()
             response.headers["ETag"] = strong_etag("project", updated.id, updated.edit_revision)
             return updated
 
@@ -1287,11 +1296,13 @@ async def upsert_project(
                 )
                 status_code = 201
 
-            return JSONResponse(
+            result = JSONResponse(
                 status_code=status_code,
                 content=jsonable_encoder(folder_read),
                 headers={"ETag": strong_etag("project", folder_read.id, folder_read.edit_revision)},
             )
+            await session.commit()
+            return result
 
         return await run_with_lock_retry(mutation_attempt, session=session, description="upsert_project")
 

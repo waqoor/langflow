@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, status
 
-from langflow.api.utils import CurrentActiveUser, DbSessionReadOnly
+from langflow.api.utils import CurrentActiveUser, DbSession
 from langflow.api.v1.schemas.authz_capabilities import AuthorizationCapabilitiesRead
 from langflow.services.authorization.collaboration import (
     CollaborationCapabilityError,
     discover_collaboration_capabilities,
 )
+from langflow.services.authorization.fetch import authorization_admission
 from langflow.services.authorization.repository import load_active_user
 from langflow.services.authorization.team_management import actor_can_administer_platform
 
@@ -20,21 +21,23 @@ router = APIRouter(prefix="/authz/capabilities", tags=["Authorization"])
 @router.get("/", response_model=AuthorizationCapabilitiesRead, include_in_schema=False)
 async def get_authorization_capabilities(
     current_user: CurrentActiveUser,
-    session: DbSessionReadOnly,
+    session: DbSession,
 ) -> AuthorizationCapabilitiesRead:
     """Report only behavior implemented by the registered, ready service."""
-    actor = await load_active_user(session, current_user.id)
-    if actor is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
-    try:
-        capabilities = await discover_collaboration_capabilities()
-    except CollaborationCapabilityError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"code": "AUTHORIZATION_NOT_READY", "message": "Authorization is not ready."},
-        ) from exc
+    async with authorization_admission(session) as admission:
+        # Authentication can create the identity in this request's transaction.
+        actor = await load_active_user(admission, current_user.id)
+        if actor is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
+        try:
+            capabilities = await discover_collaboration_capabilities()
+        except CollaborationCapabilityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"code": "AUTHORIZATION_NOT_READY", "message": "Authorization is not ready."},
+            ) from exc
 
-    can_administer_platform = actor_can_administer_platform(actor)
+        can_administer_platform = actor_can_administer_platform(actor)
     return AuthorizationCapabilitiesRead(
         enforcement_active=capabilities.enforcement_active,
         service_ready=capabilities.service_ready,

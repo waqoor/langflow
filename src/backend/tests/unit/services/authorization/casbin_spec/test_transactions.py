@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from langflow.services.authorization.casbin import store
@@ -84,6 +84,64 @@ async def scenario(policy_db, monkeypatch):
 
 async def permits(service, state):
     return await service.enforce(user_id=state.recipient, domain="*", obj=f"flow:{state.flow}", act="read")
+
+
+@pytest.mark.parametrize("operation", ["post", "put_create", "patch", "put_update"])
+async def test_project_success_is_committed_before_the_http_response(scenario, monkeypatch, operation):
+    """A successful project response and ETag must already be visible to the next request."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from langflow.api.v1.projects import router
+    from langflow.services.auth.utils import get_current_active_user
+    from langflow.services.deps import get_settings_service
+
+    state = scenario
+    settings = get_settings_service()
+    monkeypatch.setattr(settings.auth_settings, "AUTHZ_ENABLED", True)
+    monkeypatch.setattr(settings.settings, "add_projects_to_mcp_servers", False)
+    project_id = uuid4()
+    description = f"committed-{uuid4()}"
+    updating = operation in {"patch", "put_update"}
+    if updating:
+        async with state.writable() as writer:
+            await store.acquire_writer_lock(writer)
+            writer.add(Folder(id=project_id, name=str(project_id), user_id=state.owner))
+
+    async def actor():
+        async with state.readonly() as reader:
+            return await reader.get(User, state.owner)
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_active_user] = actor
+    observed = []
+
+    async def observe_response(scope, receive, send):
+        async def record(message):
+            if message["type"] == "http.response.start" and message["status"] in {200, 201}:
+                # FastAPI can send the response before request-scope dependency
+                # teardown. An independent connection models the next caller.
+                async with state.readonly() as reader:
+                    row = (await reader.exec(select(Folder).where(Folder.description == description))).first()
+                    observed.append(None if row is None else (row.id, row.edit_revision))
+            await send(message)
+
+        await app(scope, receive, record)
+
+    method = "POST" if operation == "post" else "PATCH" if operation == "patch" else "PUT"
+    path = "/projects/" if operation == "post" else f"/projects/{project_id}"
+    headers = {"If-Match": f'"project:{project_id}:1"'} if updating else {"If-None-Match": "*"}
+    async with AsyncClient(transport=ASGITransport(app=observe_response), base_url="http://test") as client:
+        response = await client.request(
+            method,
+            path,
+            headers=headers,
+            json={"name": str(project_id), "description": description},
+        )
+    assert response.status_code == (200 if updating else 201), response.text
+    body = response.json()
+    assert observed == [(UUID(body["id"]), body["edit_revision"])]
+    assert response.headers["ETag"] == f'"project:{body["id"]}:{body["edit_revision"]}"'
 
 
 @pytest.mark.parametrize("view", ["member", "managed"])
@@ -169,6 +227,71 @@ async def test_grouping_and_policy_queries_cannot_combine_two_denied_states(scen
         committed.set()
     assert not await asyncio.wait_for(task, 5)
     assert not await permits(state.services[1], state)
+
+
+async def test_download_cannot_combine_private_content_with_a_later_share(scenario, monkeypatch):
+    """TX-09: export content and its authorization come from one admission snapshot."""
+    import lfx.services.deps
+    from fastapi import HTTPException
+    from langflow.api.v1.flows import download_multiple_file
+    from langflow.services.deps import get_settings_service
+
+    state = scenario
+    monkeypatch.setattr(get_settings_service().auth_settings, "AUTHZ_ENABLED", True)
+    async with state.writable() as writer:
+        await store.acquire_writer_lock(writer)
+        await writer.delete(await writer.get(AuthzShare, state.share))
+        flow = await writer.get(Flow, state.flow)
+        flow.description = "private before sharing"
+        flow.data = {"nodes": [], "edges": []}
+        await store.reconcile_policy(writer)
+
+    content_read, published = asyncio.Event(), asyncio.Event()
+
+    class PausingSession(AsyncSession):
+        async def exec(self, statement, *args, **kwargs):
+            result = await super().exec(statement, *args, **kwargs)
+            descriptions = getattr(statement, "column_descriptions", ())
+            if descriptions and descriptions[0].get("expr") is Flow and not content_read.is_set():
+                content_read.set()
+                await asyncio.wait_for(published.wait(), 10)
+            return result
+
+    @asynccontextmanager
+    async def readonly():
+        async with PausingSession(state.engine, expire_on_commit=False) as session:
+            yield session
+
+    monkeypatch.setattr(lfx.services.deps, "session_scope_readonly", readonly)
+
+    async def download():
+        async with readonly() as reader:
+            actor = await reader.get(User, state.recipient)
+            return await download_multiple_file(flow_ids=[state.flow], user=actor, db=reader)
+
+    request = asyncio.create_task(download())
+    await asyncio.wait_for(content_read.wait(), 10)
+    try:
+        async with state.writable() as writer:
+            await store.acquire_writer_lock(writer)
+            (await writer.get(Flow, state.flow)).description = "shared after grant"
+            writer.add(
+                AuthzShare(
+                    resource_type="flow",
+                    resource_id=state.flow,
+                    scope="user",
+                    target_id=state.recipient,
+                    permission_level="read",
+                    created_by=state.owner,
+                )
+            )
+            await store.reconcile_policy(writer)
+    finally:
+        published.set()
+    with pytest.raises(HTTPException) as denied:
+        await request
+    assert denied.value.status_code == 404
+    assert (await download())["description"] == "shared after grant"
 
 
 async def test_waiting_writer_rereads_after_revocation_and_rebuilds_converge(scenario):
@@ -892,6 +1015,164 @@ async def test_rejected_assistant_flow_cleanup_removes_derived_policy(scenario, 
         assert (await store.verify_projection(reader))["valid"] is True
 
 
+async def test_user_reactivation_restores_surviving_team_share_policy(scenario):
+    """PC-14: reactivating a member restores surviving grants on the next admission."""
+    from langflow.api.v1.users import patch_user
+    from langflow.services.database.models.user.model import UserUpdate
+
+    state = scenario
+    platform_admin = User(username=str(uuid4()), password=str(uuid4()), is_active=True, is_superuser=True)
+    async with state.writable() as writer:
+        await store.acquire_writer_lock(writer)
+        writer.add(platform_admin)
+        (await writer.get(User, state.recipient)).is_active = False
+        await store.reconcile_policy(writer)
+    assert not await permits(state.services[0], state)
+
+    async with state.writable() as writer:
+        updated = await patch_user(
+            user_id=state.recipient,
+            user_update=UserUpdate(is_active=True),
+            user=platform_admin,
+            session=writer,
+        )
+        assert updated.is_active is True
+
+    assert await permits(state.services[1], state)
+    async with state.readonly() as reader:
+        assert (await store.verify_projection(reader))["valid"] is True
+
+
+@pytest.mark.parametrize("actor_kind", ["recipient", "owner", "platform"])
+async def test_visibility_rejects_inconsistent_canonical_project_context(scenario, actor_kind):
+    """A list must omit a flow denied by direct admission for conflicting containment."""
+    from langflow.services.authorization.listing import resource_visible_in_scope, restrict_to_owned_or_visible_scope
+    from langflow.services.database.models.auth import AuthzRole, AuthzRoleAssignment
+    from sqlalchemy import false
+
+    state = scenario
+    malformed = Flow(name="000-conflicting-context", user_id=state.owner, folder_id=state.project, workspace_id=uuid4())
+    role = AuthzRole(name=str(uuid4()), permissions=["flow:read"])
+    async with state.writable() as writer:
+        await store.acquire_writer_lock(writer)
+        writer.add_all([malformed, role])
+        await writer.flush()
+        writer.add(AuthzRoleAssignment(user_id=state.recipient, role_id=role.id, domain_type="global"))
+        if actor_kind == "platform":
+            (await writer.get(User, state.owner)).is_superuser = True
+        await store.reconcile_policy(writer)
+
+    service = state.services[0]
+    actor_id = state.recipient if actor_kind == "recipient" else state.owner
+    assert not await service.enforce(user_id=actor_id, domain="*", obj=f"flow:{malformed.id}", act="read")
+    visibility = await service.get_resource_visibility(user_id=actor_id, resource_type="flow", act="read")
+    statement = restrict_to_owned_or_visible_scope(
+        select(Flow.id).outerjoin(Folder, Folder.id == Flow.folder_id),
+        id_column=Flow.id,
+        owner_clause=false(),
+        visibility=visibility,
+        workspace_column=Folder.workspace_id,
+        project_column=Flow.folder_id,
+    )
+    async with state.readonly() as reader:
+        listed_ids = (await reader.exec(statement)).all()
+        first_page = (await reader.exec(statement.order_by(Flow.name).limit(1))).all()
+    assert malformed.id not in listed_ids
+    assert first_page == [state.flow]
+    assert not resource_visible_in_scope(
+        resource_id=malformed.id,
+        owner_id=state.owner,
+        project_owner_id=state.owner,
+        project_id=state.project,
+        visibility=visibility,
+        canonical_context_valid=False,
+    )
+
+
+async def test_visibility_does_not_restore_a_disabled_owner_through_the_legacy_override(scenario):
+    """Canonical list admission denies an inactive owner even in legacy SQL callers."""
+    from langflow.services.authorization.listing import restrict_to_owned_or_visible_scope
+
+    state = scenario
+    async with state.writable() as writer:
+        await store.acquire_writer_lock(writer)
+        (await writer.get(User, state.owner)).is_active = False
+        await store.reconcile_policy(writer)
+    visibility = await state.services[0].get_resource_visibility(user_id=state.owner, resource_type="flow")
+    statement = restrict_to_owned_or_visible_scope(
+        select(Flow.id),
+        id_column=Flow.id,
+        owner_clause=Flow.user_id == state.owner,
+        visibility=visibility,
+    )
+    async with state.readonly() as reader:
+        assert not (await reader.exec(statement)).all()
+
+
+@pytest.mark.parametrize("action", ["read", "write", "delete"])
+async def test_compact_project_ownership_keeps_direct_child_boundaries(scenario, action):
+    """Project ownership includes a foreign-owned direct flow but never its deletion."""
+    from langflow.services.authorization.listing import restrict_to_owned_or_visible_scope
+    from sqlalchemy import false
+
+    state = scenario
+    async with state.writable() as writer:
+        await store.acquire_writer_lock(writer)
+        await writer.delete(await writer.get(AuthzShare, state.share))
+        (await writer.get(Flow, state.flow)).user_id = state.recipient
+        await store.reconcile_policy(writer)
+    service = state.services[0]
+    visibility = await service.get_resource_visibility(user_id=state.owner, resource_type="flow", act=action)
+    assert not visibility.resource_ids
+    assert not visibility.project_ids
+    statement = restrict_to_owned_or_visible_scope(
+        select(Flow.id), id_column=Flow.id, owner_clause=false(), visibility=visibility
+    )
+    async with state.readonly() as reader:
+        listed_ids = (await reader.exec(statement)).all()
+    assert listed_ids == ([state.flow] if action != "delete" else [])
+    assert await service.enforce(user_id=state.owner, domain="*", obj=f"flow:{state.flow}", act=action) == (
+        action != "delete"
+    )
+
+
+@pytest.mark.parametrize("operation", ["patch", "delete"])
+async def test_user_lifecycle_reloads_platform_authority_after_a_committed_demotion(scenario, operation):
+    """A request identity captured before demotion cannot authorize an identity writer."""
+    from fastapi import HTTPException
+    from langflow.api.v1.users import delete_user, patch_user
+    from langflow.services.database.models.user.model import UserRead, UserUpdate
+
+    state = scenario
+    admin = User(username=str(uuid4()), password=str(uuid4()), is_active=True, is_superuser=True)
+    async with state.writable() as writer:
+        await store.acquire_writer_lock(writer)
+        writer.add(admin)
+        await store.reconcile_policy(writer)
+    request_actor = UserRead.model_validate(admin, from_attributes=True)
+    async with state.writable() as writer:
+        await store.acquire_writer_lock(writer)
+        (await writer.get(User, admin.id)).is_superuser = False
+        await store.reconcile_policy(writer)
+    async with state.writable() as writer:
+        mutation = (
+            patch_user(
+                user_id=state.recipient,
+                user_update=UserUpdate(is_active=False),
+                user=request_actor,
+                session=writer,
+            )
+            if operation == "patch"
+            else delete_user(user_id=state.recipient, current_user=request_actor, session=writer)
+        )
+        with pytest.raises(HTTPException) as denied:
+            await mutation
+        assert denied.value.status_code == 403
+    async with state.readonly() as reader:
+        assert (await reader.get(User, state.recipient)).is_active is True
+        assert (await store.verify_projection(reader))["valid"] is True
+
+
 async def test_project_share_growth_and_admission_cost(scenario, record_property):
     """Measure actual compiler, lock, SQL and rule growth without child/member grant fanout."""
     import json
@@ -939,9 +1220,10 @@ async def test_project_share_growth_and_admission_cost(scenario, record_property
         tracemalloc.stop()
         result = await store.reconcile_rules(writer, rules)
         metrics["lock_wait_ms"] = (locked - start) * 1000
-        metrics["lock_hold_ms"] = (time.perf_counter() - locked) * 1000
         metrics["noop_writes"] = result.inserted + result.deleted
         assert metrics["noop_writes"] == 0
+    # Writer ownership lasts through the caller's commit, not just reconciliation.
+    metrics["lock_hold_ms"] = (time.perf_counter() - locked) * 1000
 
     statements = []
 
@@ -968,6 +1250,14 @@ async def test_project_share_growth_and_admission_cost(scenario, record_property
                     act="read",
                 ),
             ),
+            (
+                "owner_list_scope",
+                lambda: state.services[0].get_resource_visibility(
+                    user_id=state.owner,
+                    resource_type="flow",
+                    act="read",
+                ),
+            ),
         ):
             statements.clear()
             start = time.perf_counter()
@@ -978,9 +1268,17 @@ async def test_project_share_growth_and_admission_cost(scenario, record_property
                 assert result is True
             elif name == "batch_1000":
                 assert result == [True] * 1000
-            else:
+            elif name == "list_scope":
                 assert state.project in result.project_ids
                 assert len(result.resource_ids) == 1
+            else:
+                metrics["owner_list_materialized_ids"] = len(result.resource_ids)
+                assert result.owner_id == state.owner
+                assert result.project_owner_id == state.owner
+                # The owner's team grants survive, but 1,000 other owned
+                # children never become concrete scope entries.
+                assert result.resource_ids == (state.flow,)
+                assert result.project_ids == (state.project,)
         async with state.readonly() as reader:
             metrics["loaded_rules"] = len(await store.load_rules(reader, user_id=state.recipient))
     finally:

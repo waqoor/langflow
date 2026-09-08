@@ -124,7 +124,9 @@ class AuthorizationMutationKind(str, Enum):
     """Canonical policy-relevant lifecycle mutations emitted by Langflow."""
 
     USER_CREATED = "user.created"
+    USER_ENABLED = "user.enabled"
     USER_DISABLED = "user.disabled"
+    USER_SUPERUSER_PROMOTED = "user.superuser_promoted"
     USER_SUPERUSER_DEMOTED = "user.superuser_demoted"
     USER_DELETED = "user.deleted"
     ROLE_CREATED = "role.created"
@@ -278,6 +280,12 @@ class ResourceVisibilityScope:
     resources in an explicit workspace.
     ``excluded_global_project_ids`` removes reserved projects from a global
     wildcard while preserving owner and concrete resource grants.
+    ``owner_id`` and ``project_owner_id`` express canonical ownership without
+    enumerating resources or projects. The latter includes direct project
+    children only. ``require_canonical_context`` requires existing parents and
+    matching stored workspace identifiers before applying any grant. Such a
+    scope also replaces the legacy owner override with its explicit ownership
+    fields, so an empty canonical scope denies owned resources too.
     """
 
     all_resources: bool = False
@@ -287,6 +295,9 @@ class ResourceVisibilityScope:
     include_unassigned_workspace: bool = False
     excluded_workspace_project_ids: tuple[UUID, ...] = ()
     excluded_global_project_ids: tuple[UUID, ...] = ()
+    owner_id: UUID | None = None
+    project_owner_id: UUID | None = None
+    require_canonical_context: bool = False
 
     @property
     def has_cross_user_access(self) -> bool:
@@ -297,6 +308,7 @@ class ResourceVisibilityScope:
             or self.workspace_ids
             or self.project_ids
             or self.include_unassigned_workspace
+            or self.project_owner_id is not None
         )
 
 
@@ -668,7 +680,9 @@ class BaseAuthorizationService(Service, abc.ABC):
         }
         user_kinds = {
             AuthorizationMutationKind.USER_CREATED,
+            AuthorizationMutationKind.USER_ENABLED,
             AuthorizationMutationKind.USER_DISABLED,
+            AuthorizationMutationKind.USER_SUPERUSER_PROMOTED,
             AuthorizationMutationKind.USER_SUPERUSER_DEMOTED,
             AuthorizationMutationKind.USER_DELETED,
             AuthorizationMutationKind.ROLE_ASSIGNMENT_CREATED,
