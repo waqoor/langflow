@@ -164,7 +164,7 @@ def normalize_request(
             action == "create"
             or resource_type == "share"
             or (resource_type == "voice" and action == "read")
-            or (resource_type == "variable" and action in {"write", "delete"})
+            or (resource_type == "variable" and action in {"read", "write", "delete"})
         )
     ):
         msg = "A collection request requires an existing server-classified collection operation."

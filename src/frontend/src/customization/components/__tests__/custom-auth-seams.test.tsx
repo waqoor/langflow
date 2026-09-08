@@ -82,7 +82,8 @@ describe("OSS auth customization seams", () => {
     expect(screen.queryByTestId("menu-admin-teams-button")).toBeNull();
   });
 
-  it("adds the platform Teams destination only for a Platform Admin", () => {
+  it("gives platform admins one destination for user and team administration", () => {
+    const onNavigate = jest.fn();
     mockCapabilities.mockReturnValue({
       data: {
         enforcement_active: true,
@@ -93,9 +94,27 @@ describe("OSS auth customization seams", () => {
       isError: false,
     });
 
-    render(<CustomAdminPageMenuItem onNavigate={jest.fn()} />);
+    render(<CustomAdminPageMenuItem onNavigate={onNavigate} />);
 
-    expect(screen.getByTestId("menu-admin-teams-button")).toBeVisible();
+    expect(screen.queryByTestId("menu-admin-teams-button")).toBeNull();
+    expect(screen.getByTestId("menu-admin-users-button")).toBeVisible();
+    fireEvent.click(screen.getByTestId("menu-admin-users-button"));
+    expect(onNavigate).toHaveBeenCalledWith("/admin");
+  });
+
+  it("keeps user administration available when collaboration is explicitly disabled", () => {
+    const onNavigate = jest.fn();
+    mockCapabilities.mockReturnValue({
+      data: {
+        enforcement_active: false,
+        service_ready: false,
+        can_administer_platform: true,
+      },
+    });
+    render(<CustomAdminPageMenuItem onNavigate={onNavigate} />);
+    fireEvent.click(screen.getByTestId("menu-admin-users-button"));
+    expect(onNavigate).toHaveBeenCalledWith("/admin");
+    expect(screen.queryByTestId("menu-admin-teams-button")).toBeNull();
   });
 
   it("does not render an account-menu identity header", () => {

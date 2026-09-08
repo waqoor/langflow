@@ -11,7 +11,13 @@ import { cn } from "@/utils/utils";
 import { TeamCreateDialog } from "./team-create-dialog";
 import { TeamDetails } from "./team-details";
 
-export function TeamManagement({ adminMode }: { adminMode: boolean }) {
+export function TeamManagement({
+  adminMode,
+  layout = "page",
+}: {
+  adminMode: boolean;
+  layout?: "page" | "panel";
+}) {
   const { t } = useTranslation();
   const searchId = useId();
   const [search, setSearch] = useState("");
@@ -71,16 +77,33 @@ export function TeamManagement({ adminMode }: { adminMode: boolean }) {
     );
   }
 
+  const Container = layout === "panel" ? "section" : "main";
+  const Heading = layout === "panel" ? "h3" : "h1";
+
   return (
-    <main
-      className="flex h-full min-h-0 w-full min-w-0 flex-col gap-5 p-6"
+    <Container
+      className={cn(
+        "flex min-h-0 w-full min-w-0 flex-col gap-5",
+        layout === "page" && "h-full p-6",
+      )}
       data-testid={adminMode ? "admin-teams-page" : "teams-page"}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">
-            {t(adminMode ? "teams.title.admin" : "teams.title.member")}
-          </h1>
+          <Heading
+            className={cn(
+              "font-semibold",
+              layout === "panel" ? "text-lg" : "text-2xl",
+            )}
+          >
+            {t(
+              layout === "panel"
+                ? "authz.navigation.teams"
+                : adminMode
+                  ? "teams.title.admin"
+                  : "teams.title.member",
+            )}
+          </Heading>
           <p className="mt-1 text-sm text-muted-foreground">
             {t(adminMode ? "teams.subtitle.admin" : "teams.subtitle.member")}
           </p>
@@ -206,6 +229,6 @@ export function TeamManagement({ adminMode }: { adminMode: boolean }) {
         onOpenChange={setCreateOpen}
         onCreated={setSelectedTeamId}
       />
-    </main>
+    </Container>
   );
 }

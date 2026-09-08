@@ -1,4 +1,4 @@
-"""One optional registered policy engine over canonical Langflow transactions."""
+"""The fork's default policy engine over canonical Langflow transactions."""
 
 from __future__ import annotations
 

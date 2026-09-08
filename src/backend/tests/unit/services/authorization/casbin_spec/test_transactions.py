@@ -963,7 +963,7 @@ async def test_model_status_deletion_keeps_the_complete_caller_transaction(scena
         assert (await store.verify_projection(reader))["valid"] is True
 
 
-@pytest.mark.parametrize("action", ["write", "delete"])
+@pytest.mark.parametrize("action", ["read", "write", "delete"])
 async def test_personal_variable_collection_requires_active_owner_and_credential_ceiling(scenario, action):
     """PC-20/23: personal model settings preserve ownership without broad variable authority."""
     from langflow.services.authorization.access_ceiling import (
@@ -981,7 +981,7 @@ async def test_personal_variable_collection_requires_active_owner_and_credential
     assert not await service.enforce(**request, context={**context, "variable_user_id": state.recipient})
     set_current_external_access_context(ExternalAccessContext(provider="test", subject="test", level="viewer"))
     try:
-        assert not await service.enforce(**request, context=context)
+        assert await service.enforce(**request, context=context) is (action == "read")
     finally:
         clear_current_external_access_context()
     async with state.writable() as writer:

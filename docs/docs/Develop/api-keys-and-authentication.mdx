@@ -781,7 +781,9 @@ For more information, see [Docker image defaults](/deployment-docker#docker-imag
 
 With authentication enabled, all users must sign in to the visual editor with valid credentials, and API requests require authentication with a Langflow API key.
 Sign in as a superuser to [create a Langflow API key](#create-a-langflow-api-key) with superuser privileges.
-User management is through the [Users API](/api-users), not the visual editor.
+This fork restores **Admin settings** in the account menu at `/admin`. Its **Users** tab lets active superusers add users, edit usernames or passwords, change Active/Superuser status, and request account deletion. The **Teams** tab provides team creation and management on the same page; existing `/admin/teams` links open this tab. The page uses the existing [Users API](/api-users), which remains available for automation. Ordinary users cannot access the page or administer other accounts. User administration remains available when collaboration is explicitly disabled; team administration requires the collaboration service.
+
+Account deletion retains the backend's resource-ownership and team-membership protections. An account that still owns resources must have those resources explicitly transferred or deleted first; the admin page does not cascade-delete them. Deactivate an account when access needs to end before resource disposition is complete.
 
 ### Start the Langflow server
 
@@ -801,7 +803,7 @@ User management is through the [Users API](/api-users), not the visual editor.
     This example focuses on authentication variables.
 
     `LANGFLOW_ENABLE_SIGNUP=False` restricts account creation to superusers.
-    `LANGFLOW_NEW_USER_IS_ACTIVE=False` keeps new accounts inactive until you activate them with the Users API.
+    `LANGFLOW_NEW_USER_IS_ACTIVE=False` keeps new accounts inactive until you activate them in **Admin settings** or with the Users API.
 
 2. Set `LANGFLOW_SUPERUSER_PASSWORD` to your desired superuser password. Optionally set `LANGFLOW_SUPERUSER` to override the default `langflow` username.
 

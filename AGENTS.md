@@ -107,10 +107,10 @@ Backend services in `src/backend/base/langflow/services/`:
 Authorization is a pluggable layer separate from authentication:
 
 - `lfx` owns `BaseAuthorizationService` and its provider-free, pass-through default.
-- `LangflowAuthorizationService` preserves the OSS pass-through default. This `waqoor/langflow` fork supplies the optional `CasbinAuthorizationService` through `langflow-base[authorization]`, selected explicitly in `lfx.toml`. Canonical `authz_*`, user, and resource rows remain authoritative; `casbin_rule` is their rebuildable projection. The selected service evaluates scoped roles, team operations, and shares through one Casbin model, with no native fallback or Redis correctness dependency.
+- This `waqoor/langflow` fork installs and registers `CasbinAuthorizationService` by default through `langflow-base`. The `authorization` extra remains a compatibility alias. Canonical `authz_*`, user, and resource rows remain authoritative; `casbin_rule` is their rebuildable projection. The service evaluates scoped roles, team operations, and shares through one Casbin model, with no native fallback or Redis correctness dependency. `LangflowAuthorizationService` remains available only as an explicitly selected pass-through implementation.
 - A deployment can replace that service through the `authorization_service` entry in `lfx.toml`. A replacement must advertise the collaboration capabilities it actually implements; the frontend fails closed when the service is unavailable or incomplete.
 
-Enforcement is default **off** through `LANGFLOW_AUTHZ_ENABLED=false`, preserving historical owner-scoped behavior. With the registered Casbin service and the flag enabled, unknown actions, missing policy data, inactive identities, and service failures deny rather than degrading to pass-through behavior. Installing the optional dependency alone does not select the service.
+Enforcement is default **on** through `LANGFLOW_AUTHZ_ENABLED=true`; no `lfx.toml` is required for Casbin. An explicit `LANGFLOW_AUTHZ_ENABLED=false` preserves historical owner-scoped behavior. Unknown actions, missing policy data, inactive identities, and service failures deny rather than degrading to pass-through behavior. Before upgrading existing databases, back up their data and run the migration/team preflight; invalid legacy policy fails startup closed.
 
 Team-management roles are distinct from resource permissions: `admin`, `maintainer`, and `user` apply only to one team's roster and settings. Platform authority remains an active `User.is_superuser`, subject to the configured bypass and credential ceiling. Resource access comes from ownership, scoped roles, user/team shares, and direct-project inheritance.
 
@@ -205,7 +205,7 @@ Required fixtures: `component_class`, `default_kwargs`, `file_names_mapping`
 - Pre-commit hooks require `uv run git commit`
 - Always use `uv run` when running Python commands
 - When running tests inside a sub-package (e.g. `langflow-base`, `lfx`), sync that package's dev group first: `uv sync --group dev --package langflow-base`. The default `uv sync` only resolves the top-level workspace and may leave dev-only test deps (e.g. `fakeredis`) uninstalled.
-- Backend unit and real-service test targets install the optional `authorization` extra for test collection. After syncing that extra, use `uv run --no-sync pytest ...` for focused runs so an implicit sync does not remove it.
+- Casbin is a default backend dependency; the `authorization` extra remains supported for existing test commands. Use `uv run --no-sync pytest ...` for focused runs after syncing the package's dev group.
 
 ### Graph Testing Pattern
 

@@ -5,31 +5,31 @@ slug: /authorization
 
 Langflow includes a replaceable authorization service for role-based access control (RBAC) over flows, projects, deployments, files, variables, and knowledge bases. Authentication proves who the caller is; authorization separately decides what that active identity may do.
 
-This `waqoor/langflow` fork provides one optional registered Casbin implementation in `langflow-base`. Canonical Langflow user, resource, role, team, membership, and share rows remain the single source of policy truth. The existing `casbin_rule` table stores a deterministic, rebuildable projection in the same database. Each admission reads fresh canonical context and policy together; correctness does not depend on Redis or a long-lived permission cache. Provider-free `lfx` retains the service interface and pass-through default. Installing the optional dependency does not select it automatically.
+This `waqoor/langflow` fork includes Casbin in the default `langflow-base` installation and registers it automatically. Canonical Langflow user, resource, role, team, membership, and share rows remain the single source of policy truth. The existing `casbin_rule` table stores a deterministic, rebuildable projection in the same database. Each admission reads fresh canonical context and policy together; correctness does not depend on Redis or a long-lived permission cache. Provider-free `lfx` retains the service interface and pass-through default.
 
-Authorization is default off. When `LANGFLOW_AUTHZ_ENABLED=false`, Langflow preserves its historical owner-scoped behavior. When the registered Casbin service is enabled, unknown actions, inactive identities, invalid teams, missing policy state, and service/database failures deny access. Capability discovery fails closed. An unavailable selected implementation cannot fall back to the OSS service.
+Authorization is enabled by default. An explicit `LANGFLOW_AUTHZ_ENABLED=false` preserves historical owner-scoped behavior. With Casbin enabled, unknown actions, inactive identities, invalid teams, missing policy state, and service/database failures deny access. Capability discovery fails closed. An unavailable selected implementation cannot fall back to the OSS service.
 
 ## Enable authorization and collaboration
 
-Install the authorization extra from the same fork candidate as the application. From a source checkout:
+Install this fork from the source checkout; Casbin is included automatically:
 
 ```bash
-uv sync --locked --package langflow --package langflow-base --extra authorization
+uv sync --locked
 ```
 
-Select the service in `LANGFLOW_CONFIG_DIR/lfx.toml`:
+No service configuration file is required. An existing explicit service selection in `LANGFLOW_CONFIG_DIR/lfx.toml` still takes precedence. To explicitly select the bundled implementation:
 
 ```toml
 [services]
 authorization_service = "langflow.services.authorization.casbin.service:CasbinAuthorizationService"
 ```
 
-The optional `casbin` distribution is locked at `1.43.0`; `model.conf` ships inside the backend package and is loaded through package resources. Use the built fork candidate when installing wheels. A released upstream package does not establish support for this implementation.
+The `casbin` distribution is locked at `1.43.0`; `model.conf` ships inside the backend package and is loaded through package resources. The legacy `langflow-base[authorization]` installation spelling remains supported. Build images from this checkout to get the fork defaults; upstream images have their own defaults.
 
 1. Back up the application database and record the backup identifier and current Alembic revision. Apply the normal migrations, including `bf6c22022777`.
 2. Disable auto-login (`LANGFLOW_AUTO_LOGIN=false`), configure a strong bootstrap superuser password and `LANGFLOW_SECRET_KEY`, and terminate TLS at a trusted HTTPS boundary. Distinct authenticated users are required to validate sharing.
 3. While application writes are stopped, run `langflow authz teams-check`. If it reports legacy empty or adminless teams, prepare an explicit JSON mapping and run `langflow authz teams-repair --mapping-file <path>`. The repair command never guesses or promotes an administrator.
-4. Set `LANGFLOW_AUTHZ_ENABLED=true`. For compliance-grade authorization logs, also set both `LANGFLOW_AUTHZ_AUDIT_ENABLED=true` and `LANGFLOW_AUTHZ_AUDIT_DURABLE=true`.
+4. Keep `LANGFLOW_AUTHZ_ENABLED=true` in your configuration. The flag defaults to `true`; set it to `false` only when explicitly disabling enforcement. For compliance-grade authorization logs, also set both `LANGFLOW_AUTHZ_AUDIT_ENABLED=true` and `LANGFLOW_AUTHZ_AUDIT_DURABLE=true`.
 5. Start the synced candidate with `uv run --no-sync langflow run` and require `CasbinAuthorizationService` in its authorization readiness log. Call `GET /api/v1/authz/capabilities` as an authenticated user and require `enforcement_active`, `service_ready`, `team_roles_supported`, `user_team_sharing_supported`, and `conditional_writes_required` to be `true` before exposing collaboration features.
 6. Create teams with an initial active Team Admin, then create user/team shares through the UI or [shares API](#shares-api).
 
@@ -39,7 +39,7 @@ The registered authorization service must explicitly advertise team roles, user/
 
 | Variable | Description | Default |
 |---|---|---|
-| `LANGFLOW_AUTHZ_ENABLED` | Enable enforcement through the explicitly registered authorization service. The flag alone does not select Casbin. | `false` |
+| `LANGFLOW_AUTHZ_ENABLED` | Enable enforcement through the registered service. This fork selects Casbin automatically unless a service override is configured. | `true` |
 | `LANGFLOW_AUTHZ_SUPERUSER_BYPASS` | Let an active superuser bypass resource checks, subject to any narrower external credential ceiling. It never turns a Team Admin into a Platform Admin. | `true` |
 | `LANGFLOW_AUTHZ_AUDIT_ENABLED` | Write decision and share-administration audit rows. This is independent of enforcement and is best effort unless durable mode is enabled. | `false` |
 | `LANGFLOW_AUTHZ_AUDIT_DURABLE` | Wait for each accepted audit row to commit. A full bounded queue applies backpressure and persistence failures fail the triggering request with a sanitized error. Enable this before treating the audit table as a compliance or external-delivery source. | `false` |

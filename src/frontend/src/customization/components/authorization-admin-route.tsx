@@ -4,7 +4,13 @@ import { Navigate } from "react-router-dom";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useGetAuthorizationCapabilities } from "@/controllers/API/queries/authorization";
 
-export function AuthorizationAdminRoute({ children }: { children: ReactNode }) {
+export function AuthorizationAdminRoute({
+  children,
+  requiresCollaboration = true,
+}: {
+  children: ReactNode;
+  requiresCollaboration?: boolean;
+}) {
   const { t } = useTranslation();
   const capabilities = useGetAuthorizationCapabilities();
   if (capabilities.isLoading)
@@ -15,8 +21,10 @@ export function AuthorizationAdminRoute({ children }: { children: ReactNode }) {
     );
   if (
     capabilities.isError ||
-    !capabilities.data?.enforcement_active ||
-    !capabilities.data.service_ready
+    !capabilities.data ||
+    (requiresCollaboration &&
+      (!capabilities.data.enforcement_active ||
+        !capabilities.data.service_ready))
   ) {
     return (
       <Alert variant="destructive" className="m-6">

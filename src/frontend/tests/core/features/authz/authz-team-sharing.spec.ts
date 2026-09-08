@@ -328,7 +328,7 @@ async function addInitialTeamMember(
     items: Array<{ id: string; display_name: string }>;
   }>(await searchResponse, 200, `search for initial team member ${username}`);
   expect(result.items.map((item) => item.display_name)).toContain(username);
-  await expect(page).toHaveURL(/\/admin\/teams$/);
+  await expect(page).toHaveURL(/\/admin\?tab=teams$/);
   await picker.getByRole("button", { name: username, exact: true }).click();
   await picker.getByRole("button", { name: "Add member" }).click();
 }
@@ -484,7 +484,13 @@ test.describe("registered team and resource sharing", () => {
     "[AUTHZ-JOURNEY-01] Platform Admin creates a non-empty team and scoped roles control each member UI",
     { tag: ["@authz", "@api", "@database", "@workspace", "@release"] },
     async ({ page: a11yPage }) => {
-      await adminPage.goto("/admin/teams");
+      await adminPage.goto("/admin");
+      await expect(
+        adminPage.getByRole("tab", { name: "Users", exact: true }),
+      ).toHaveAttribute("aria-selected", "true");
+      await expect(adminPage.getByTestId("admin-add-user")).toBeVisible();
+      await adminPage.getByRole("tab", { name: "Teams", exact: true }).click();
+      await expect(adminPage).toHaveURL(/\/admin\?tab=teams$/);
       await expect(adminPage.getByTestId("admin-teams-page")).toBeVisible({
         timeout: TIMEOUTS.standard,
       });
@@ -550,6 +556,7 @@ test.describe("registered team and resource sharing", () => {
 
       await authenticatePage(a11yPage, "langflow", SUPERUSER_PASSWORD);
       await a11yPage.goto("/admin/teams");
+      await expect(a11yPage).toHaveURL(/\/admin\?tab=teams$/);
       await expect(a11yPage.getByTestId("admin-teams-page")).toBeVisible({
         timeout: TIMEOUTS.standard,
       });

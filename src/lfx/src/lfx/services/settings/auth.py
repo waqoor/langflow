@@ -281,11 +281,11 @@ class AuthSettings(BaseSettings):
 
     # Authorization (RBAC) feature flags — enforcement via the registered service
     AUTHZ_ENABLED: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Enable authorization enforcement through the registered authorization service. "
-            "The full Langflow application registers its native canonical-table evaluator; "
-            "provider-free LFX retains the interface default."
+            "This Langflow fork registers Casbin by default; set False for owner-scoped compatibility. "
+            "Provider-free LFX retains its pass-through service."
         ),
     )
     AUTHZ_SUPERUSER_BYPASS: bool = Field(

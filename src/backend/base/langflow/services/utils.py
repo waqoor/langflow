@@ -597,7 +597,7 @@ def register_all_service_factories() -> None:
     from langflow.services.auth import factory as auth_factory
     from langflow.services.auth.service import AuthService
     from langflow.services.authorization import factory as authorization_factory
-    from langflow.services.authorization.service import LangflowAuthorizationService
+    from langflow.services.authorization.casbin.service import CasbinAuthorizationService
     from langflow.services.cache import factory as cache_factory
     from langflow.services.catalog_policy import factory as catalog_policy_factory
     from langflow.services.catalog_policy.service import LangflowCatalogPolicyService
@@ -647,7 +647,7 @@ def register_all_service_factories() -> None:
         and registered_authorization.__name__ == "AuthorizationService"
     ):
         service_manager.register_service_class(
-            ServiceType.AUTHORIZATION_SERVICE, LangflowAuthorizationService, override=True
+            ServiceType.AUTHORIZATION_SERVICE, CasbinAuthorizationService, override=True
         )
     service_manager.register_factory(authorization_factory.AuthorizationServiceFactory())
     service_manager.register_service_class(
