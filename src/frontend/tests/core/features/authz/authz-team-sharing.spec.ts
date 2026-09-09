@@ -561,6 +561,18 @@ test.describe("registered team and resource sharing", () => {
         a11yPage.getByRole("table", { name: "Users" }),
       ).toBeVisible();
       await a11yPage.runA11yScan("authz-admin-users");
+      await a11yPage
+        .getByRole("textbox", { name: "Search users" })
+        .fill(owner.username);
+      await a11yPage
+        .getByRole("button", { name: "Search", exact: true })
+        .click();
+      await expect(
+        a11yPage.getByRole("button", {
+          name: `Edit ${owner.username}`,
+          exact: true,
+        }),
+      ).toBeVisible();
       for (const action of [
         "Add User",
         `Edit ${owner.username}`,
@@ -593,6 +605,9 @@ test.describe("registered team and resource sharing", () => {
             ),
           )
           .toBe(true);
+        // Leave the Close tooltip before testing the dialog's Escape handler.
+        await a11yPage.keyboard.press("Tab");
+        await expect(a11yPage.getByRole("tooltip")).toBeHidden();
         await a11yPage.keyboard.press("Escape");
         await expect(userDialog).toBeHidden();
         await expect(trigger).toBeFocused();
