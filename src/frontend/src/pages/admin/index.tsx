@@ -13,47 +13,49 @@ export default function AdminPage() {
   useDocumentTitle(t("adminUsers.title"));
 
   return (
-    <PageLayout
-      title={t("adminUsers.title")}
-      description={t("adminUsers.pageDescription")}
-      backTo="/"
-    >
-      <Tabs
-        value={tab}
-        onValueChange={(value) => {
-          setSearchParams((current) => {
-            const next = new URLSearchParams(current);
-            if (value === "teams") next.set("tab", "teams");
-            else next.delete("tab");
-            return next;
-          });
-        }}
-        className="flex w-full min-w-0 flex-col"
+    <main className="flex w-full min-w-0 flex-1">
+      <PageLayout
+        title={t("adminUsers.title")}
+        description={t("adminUsers.pageDescription")}
+        backTo="/"
       >
-        <TabsList
-          aria-label={t("adminUsers.title")}
-          className="justify-start border-b"
+        <Tabs
+          value={tab}
+          onValueChange={(value) => {
+            setSearchParams((current) => {
+              const next = new URLSearchParams(current);
+              if (value === "teams") next.set("tab", "teams");
+              else next.delete("tab");
+              return next;
+            });
+          }}
+          className="flex w-full min-w-0 flex-col"
         >
-          <TabsTrigger
-            value="users"
-            className="px-5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring motion-reduce:transition-none"
+          <TabsList
+            aria-label={t("adminUsers.title")}
+            className="justify-start border-b"
           >
-            {t("adminUsers.usersTitle")}
-          </TabsTrigger>
-          <TabsTrigger
-            value="teams"
-            className="px-5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring motion-reduce:transition-none"
-          >
-            {t("authz.navigation.teams")}
-          </TabsTrigger>
-        </TabsList>
-        <TabsContent value="users" className="mt-6 min-w-0">
-          <AdminUsersPage />
-        </TabsContent>
-        <TabsContent value="teams" className="mt-6 min-w-0">
-          <TeamManagement adminMode layout="panel" />
-        </TabsContent>
-      </Tabs>
-    </PageLayout>
+            <TabsTrigger
+              value="users"
+              className="px-5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring motion-reduce:transition-none"
+            >
+              {t("adminUsers.usersTitle")}
+            </TabsTrigger>
+            <TabsTrigger
+              value="teams"
+              className="px-5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring motion-reduce:transition-none"
+            >
+              {t("authz.navigation.teams")}
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="users" className="mt-6 min-w-0">
+            <AdminUsersPage />
+          </TabsContent>
+          <TabsContent value="teams" className="mt-6 min-w-0">
+            <TeamManagement adminMode layout="panel" />
+          </TabsContent>
+        </Tabs>
+      </PageLayout>
+    </main>
   );
 }

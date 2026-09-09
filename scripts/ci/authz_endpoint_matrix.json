@@ -1,6 +1,34 @@
 {
   "schema_version": 1,
-  "description": "Canonical OSS route-to-authorization contract. Every decorated route in the listed modules must be classified here.",
+  "description": "Langflow route-to-authorization contract for the explicitly declared module scope. Every decorated route in that scope must be classified, even if its last contract is removed.",
+  "scope": {
+    "description": "Existing authorization, team-sharing and associated runtime route families from the revision 003 acceptance matrix. This is a structural route/persona inventory, not proof of every route's behavior or an inventory of the entire API.",
+    "sources": [
+      "api/v1/authz_teams.py",
+      "api/v1/authz_shares.py",
+      "api/v1/authz_me.py",
+      "api/v1/authz_capabilities.py",
+      "api/v1/authz_recipients.py",
+      "api/v1/flows.py",
+      "api/v1/endpoints.py",
+      "api/v1/openai_responses.py",
+      "api/v1/mcp.py",
+      "api/v1/mcp_projects.py",
+      "api/v1/a2a.py",
+      "api/v1/chat.py",
+      "api/v1/voice_mode.py",
+      "api/v1/projects.py",
+      "api/v1/deployments.py",
+      "api/v1/files.py",
+      "api/v1/variable.py",
+      "api/v1/knowledge_bases.py",
+      "api/v2/files.py",
+      "api/v2/mcp.py",
+      "api/v2/workflow.py",
+      "api/v2/workflow_public.py"
+    ],
+    "excluded_review": "Other API modules are outside this declared inventory. Structural completeness does not certify secrets, private dependencies, historical build content or every endpoint's behavior."
+  },
   "persona_presets": {
     "canonical_v1": {
       "viewer": "allow read and flow execute only when the role domain and object grant match",
