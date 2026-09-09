@@ -485,10 +485,12 @@ test.describe("registered team and resource sharing", () => {
     { tag: ["@authz", "@api", "@database", "@workspace", "@release"] },
     async ({ page: a11yPage }) => {
       await adminPage.goto("/admin");
+      await expect(adminPage.getByTestId("admin-add-user")).toBeVisible({
+        timeout: TIMEOUTS.standard,
+      });
       await expect(
         adminPage.getByRole("tab", { name: "Users", exact: true }),
       ).toHaveAttribute("aria-selected", "true");
-      await expect(adminPage.getByTestId("admin-add-user")).toBeVisible();
       await adminPage.getByRole("tab", { name: "Teams", exact: true }).click();
       await expect(adminPage).toHaveURL(/\/admin\?tab=teams$/);
       await expect(adminPage.getByTestId("admin-teams-page")).toBeVisible({
@@ -556,6 +558,9 @@ test.describe("registered team and resource sharing", () => {
 
       await authenticatePage(a11yPage, "langflow", SUPERUSER_PASSWORD);
       await a11yPage.goto("/admin");
+      await expect(a11yPage.getByTestId("admin-add-user")).toBeVisible({
+        timeout: TIMEOUTS.standard,
+      });
       await expect(a11yPage.getByRole("main")).toHaveCount(1);
       await expect(
         a11yPage.getByRole("table", { name: "Users" }),
