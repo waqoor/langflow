@@ -53,6 +53,22 @@ load_dotenv()
 
 
 @pytest.fixture(scope="session", autouse=True)
+def authorization_test_mode():
+    """Select legacy compatibility unless this run explicitly enables enforcement.
+
+    Normal browser tests use the same mode. The required authorization matrix
+    supplies its own environment, and Casbin fixtures explicitly enable their
+    service. Fresh-install default tests remove this setting themselves.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        if "LANGFLOW_AUTHZ_ENABLED" not in os.environ:
+            patch.setenv("LANGFLOW_AUTHZ_ENABLED", "false")
+            if is_settings_service_initialized():
+                patch.setattr(get_settings_service().auth_settings, "AUTHZ_ENABLED", False)
+        yield
+
+
+@pytest.fixture(scope="session", autouse=True)
 def disable_rate_limiting():
     """Disable rate limiting for all tests to prevent 429 errors during test execution."""
     os.environ["LANGFLOW_RATE_LIMIT_ENABLED"] = "false"
