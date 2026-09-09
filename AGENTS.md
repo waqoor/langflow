@@ -114,6 +114,8 @@ Enforcement is default **on** through `LANGFLOW_AUTHZ_ENABLED=true`; no `lfx.tom
 
 Team-management roles are distinct from resource permissions: `admin`, `maintainer`, and `user` apply only to one team's roster and settings. Platform authority remains an active `User.is_superuser`, subject to the configured bypass and credential ceiling. Resource access comes from ownership, scoped roles, user/team shares, and direct-project inheritance.
 
+The default Casbin service manages team memberships locally; external authentication/JIT does not automatically synchronize IdP groups. Directory synchronization belongs to an explicitly selected integration implementing the existing verified-claim and directory-ingestion hooks. Preserve source-managed membership provenance and manual-removal restrictions without inventing provider mappings or a new synchronization feature.
+
 The sharing dialog exposes only **Can use** (`execute`) and **Can edit** (`write`) for flow/project user or team grants. The low-level API retains `read`, `execute`, `write`, and `admin`; do not collapse or silently promote those values. An editable grant does not confer ownership, deletion, moving, publishing, or resharing authority.
 
 Route guards live in `langflow.services.authorization.guards` (the legacy `langflow.services.authorization.utils` path re-exports them for backward compatibility):

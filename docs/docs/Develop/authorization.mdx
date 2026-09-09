@@ -79,6 +79,8 @@ Team roles govern one team's administration only. They never grant flow/project 
 
 Every committed team has at least one member, and every active team has at least one active Admin. Final-roster validation and database locks prevent concurrent removals/demotions from committing an invalid result. A manually managed endpoint cannot remove a source-managed membership.
 
+The default Casbin service manages memberships locally. External authentication and JIT provisioning do not automatically synchronize provider groups with teams. Directory synchronization requires an explicitly selected authorization-service integration with an authoritative mapping and transactional ingestion; see [External authentication](./external-authentication.mdx#external-identity-with-teams-and-resource-sharing). Existing source-managed provenance remains protected when no such integration is configured.
+
 For flow and project sharing, the UI offers exactly two modes:
 
 - **Can use** stores `permission_level="execute"`: read the resource and execute the saved flow. On a project, this means project read plus read/execute for directly contained flows.

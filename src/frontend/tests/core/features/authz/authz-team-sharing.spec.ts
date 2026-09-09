@@ -555,6 +555,58 @@ test.describe("registered team and resource sharing", () => {
       );
 
       await authenticatePage(a11yPage, "langflow", SUPERUSER_PASSWORD);
+      await a11yPage.goto("/admin");
+      await expect(a11yPage.getByRole("main")).toHaveCount(1);
+      await expect(
+        a11yPage.getByRole("table", { name: "Users" }),
+      ).toBeVisible();
+      await a11yPage.runA11yScan("authz-admin-users");
+      for (const action of [
+        "Add User",
+        `Edit ${owner.username}`,
+        `Delete ${owner.username}`,
+      ]) {
+        const trigger = a11yPage.getByRole("button", {
+          name: action,
+          exact: true,
+        });
+        await trigger.focus();
+        await a11yPage.keyboard.press("Enter");
+        const userDialog = a11yPage.getByRole("dialog");
+        await expect(userDialog).toBeVisible();
+        await a11yPage.runA11yScan(
+          `authz-admin-users-${action.split(" ")[0].toLowerCase()}-dialog`,
+        );
+        await a11yPage.keyboard.press("Tab");
+        await expect
+          .poll(() =>
+            userDialog.evaluate((node) =>
+              node.contains(document.activeElement),
+            ),
+          )
+          .toBe(true);
+        await a11yPage.keyboard.press("Shift+Tab");
+        await expect
+          .poll(() =>
+            userDialog.evaluate((node) =>
+              node.contains(document.activeElement),
+            ),
+          )
+          .toBe(true);
+        await a11yPage.keyboard.press("Escape");
+        await expect(userDialog).toBeHidden();
+        await expect(trigger).toBeFocused();
+      }
+      await a11yPage
+        .getByRole("textbox", { name: "Search users" })
+        .fill(`absent-${runId}`);
+      await a11yPage
+        .getByRole("button", { name: "Search", exact: true })
+        .click();
+      await expect(
+        a11yPage.getByText("No users found.", { exact: true }),
+      ).toBeVisible();
+      await a11yPage.runA11yScan("authz-admin-users-empty");
       await a11yPage.goto("/admin/teams");
       await expect(a11yPage).toHaveURL(/\/admin\?tab=teams$/);
       await expect(a11yPage.getByTestId("admin-teams-page")).toBeVisible({

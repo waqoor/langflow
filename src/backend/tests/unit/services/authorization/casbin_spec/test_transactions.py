@@ -86,6 +86,48 @@ async def permits(service, state):
     return await service.enforce(user_id=state.recipient, domain="*", obj=f"flow:{state.flow}", act="read")
 
 
+@pytest.mark.parametrize("group_claim", ["matching", "empty"])
+async def test_default_service_keeps_membership_locally_managed(scenario, group_claim):
+    """Verified group claims neither add nor remove members without a directory integration."""
+    from langflow.services.auth.external import ExternalIdentity
+    from langflow.services.auth.service import AuthService
+    from langflow.services.deps import get_settings_service
+
+    state = scenario
+    outsider = User(username=str(uuid4()), password=str(uuid4()), is_active=True)
+    async with state.writable() as writer:
+        await store.acquire_writer_lock(writer)
+        writer.add(outsider)
+        await store.reconcile_policy(writer)
+
+    auth = AuthService(get_settings_service())
+    async with state.writable() as session:
+        team = await session.get(AuthzTeam, state.team)
+        before = {
+            (member.id, member.team_id, member.user_id, member.source, member.role)
+            for member in (await session.exec(select(AuthzTeamMember))).all()
+        }
+        for user_id in (state.recipient, outsider.id):
+            user = await session.get(User, user_id)
+            identity = ExternalIdentity(
+                provider="test-directory",
+                subject=str(user_id),
+                username=user.username,
+                claims={"groups": [team.adom_name] if group_claim == "matching" else []},
+            )
+            await auth._reconcile_verified_external_groups(identity=identity, user=user, db=session)
+
+    async with state.readonly() as reader:
+        after = {
+            (member.id, member.team_id, member.user_id, member.source, member.role)
+            for member in (await reader.exec(select(AuthzTeamMember))).all()
+        }
+        assert after == before
+        assert (await store.verify_projection(reader))["valid"] is True
+    assert await permits(state.services[1], state) is True
+    assert not await state.services[1].enforce(user_id=outsider.id, domain="*", obj=f"flow:{state.flow}", act="read")
+
+
 @pytest.mark.parametrize("replace", [False, True])
 async def test_unused_superuser_teardown_keeps_policy_coherent(scenario, monkeypatch, replace):
     """Shutdown and restart publish bootstrap identity deletion with its derived policy."""
