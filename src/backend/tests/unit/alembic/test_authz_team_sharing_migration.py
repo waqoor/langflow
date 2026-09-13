@@ -9,7 +9,12 @@ import pytest
 from alembic import command
 from sqlalchemy import create_engine, inspect, text
 
-from .test_migration_execution import _engine_url, _make_alembic_cfg
+from .test_migration_execution import (
+    _create_pg_test_database,
+    _drop_pg_test_database,
+    _engine_url,
+    _make_alembic_cfg,
+)
 
 _PRIOR_REVISION = "c6d8e0f2a4b7"  # pragma: allowlist secret
 _REVISION = "bf6c22022777"  # pragma: allowlist secret
@@ -29,6 +34,57 @@ def authz_database_url(tmp_path) -> str:
 
 def _constraint_names(inspector, table_name: str) -> set[str]:
     return {str(item["name"]) for item in inspector.get_check_constraints(table_name)}
+
+
+@pytest.fixture
+def merge_database_url(authz_database_url, tmp_path):
+    if authz_database_url.startswith("postgresql"):
+        name = f"authz_merge_{uuid4().hex}"
+        try:
+            yield _create_pg_test_database(authz_database_url, name)
+        finally:
+            _drop_pg_test_database(authz_database_url, name)
+    else:
+        yield f"sqlite+aiosqlite:///{tmp_path / 'merge.db'}"
+
+
+@pytest.mark.parametrize("starting_revision", [_REVISION, "d7e9f1a3b5c8"])
+def test_upstream_merge_upgrades_both_existing_heads(merge_database_url, starting_revision):
+    """Both released branches converge without losing existing canonical team rows."""
+    config = _make_alembic_cfg(merge_database_url)
+    command.upgrade(config, starting_revision)
+    team_id = str(uuid4())
+    engine = create_engine(_engine_url(merge_database_url))
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO authz_team "
+                    "(id, team_name, adom_name, is_active, created_at, updated_at) "
+                    "VALUES (:id, :name, :name, false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ),
+                {"id": team_id, "name": f"merge-{team_id}"},
+            )
+        command.upgrade(config, "head")
+        command.upgrade(config, "head")
+        inspector = inspect(engine)
+        assert "is_environment_managed" in {c["name"] for c in inspector.get_columns("variable")}
+        assert "role" in {c["name"] for c in inspector.get_columns("authz_team_member")}
+        assert "revision" in {c["name"] for c in inspector.get_columns("authz_share")}
+        for table in ("flow", "folder"):
+            assert "edit_revision" in {c["name"] for c in inspector.get_columns(table)}
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == [
+                "e8a9b0c1d2f3"
+            ]
+            assert (
+                connection.execute(
+                    text("SELECT team_name FROM authz_team WHERE id = :id"), {"id": team_id}
+                ).scalar_one()
+                == f"merge-{team_id}"
+            )
+    finally:
+        engine.dispose()
 
 
 def test_team_sharing_migration_backfills_and_round_trips(authz_database_url: str):

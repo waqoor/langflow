@@ -1,26 +1,28 @@
 # RBAC & Sharing Implementation Audit
 
+**September 13 upstream merge reassessment:** the historical completion evidence below belongs to the pre-merge fork. Validation of the combined upstream/fork candidate is in progress; it is not yet release-certified. Current merge evidence is recorded in [the verification ledger](docs/auth-team-sharing-verification.md). The established exclusions and deployment boundaries remain unchanged.
+
 ## 1. Final Verdict
 
-**All six authorized follow-up items are DONE.** The initial audit examined `main` at `b2b2172106a95367ebaf320c10b558e9f23537e9`; the completed follow-up is verified on `944b35148d0ef8d72c6613b5b0164b2f32799bee`, September 9, 2026. The broader whole-plan/upstream-compatible verdict remains `NOT DONE` for the separately classified contract differences and conditional decisions below.
+**The six implementation follow-ups and all three fork-default conflicts are DONE.** Owner-approved D11 in plan 003 revision 1.8 resolves ARCH-05/06/07 and EXT-02. Current HEAD `5111f56569b8626a27d3b616328b1c03779bdb2a` has runtime, test, build and CI source identical to validated candidate `944b35148d0ef8d72c6613b5b0164b2f32799bee`. Fresh default/override checks passed on September 9, 2026. Upstream adoption, deployment assumptions and excluded work remain outside this conclusion.
 
-The canonical Casbin implementation, scoped roles, team management, targeted grants, project inheritance, conditional saves, and collaboration UI are implemented. The authorized follow-up closes exactly the original six `PARTIALLY_DONE` rows: AUTH-07, TEST-02, TEST-04, TEST-05, TEST-06 and DOC-02. Final combined CI passes 70 jobs with eight conditional skips and no failed/cancelled jobs. Fork/default conflicts and external proposals remain separately classified. The original eight-journey local pass did not enable IBM assertions; the final hosted follow-up supplies that evidence.
+The canonical Casbin implementation, scoped roles, teams, targeted grants, project inheritance, conditional saves and collaboration UI are implemented. The preceding follow-up closed AUTH-07, TEST-02, TEST-04, TEST-05, TEST-06 and DOC-02; its CI passed 70 jobs with eight conditional skips and no failed/cancelled jobs. D11 subsequently resolves the three packaging/default conflicts under the approved fork contract. External proposals remain separate. Final hosted journeys supply the IBM assertions absent from the initial local run.
 
 **Latest scope instruction:** the user excluded further security/secrets content and asked to continue with the remaining plan items. EXEC-02/03/05/06 are therefore deferred as `OUT_OF_SCOPE` for this report, with detailed security reproductions omitted. This is not a claim that those excluded boundaries are resolved or validated. The verdict below concerns the remaining requested plan/architecture/functionality/validation work.
 
-The initial audit changed only this report. The subsequent authorized implementation adds bounded inventory validation, membership-default regression coverage, administration accessibility coverage and a page-level landmark correction. It also makes the inherited backend tests' compatibility mode explicit while preserving required enforcement coverage, and clarifies the existing membership documentation. The user's pre-existing deletion of revision 002 remains preserved; revision 003 remains unchanged.
+The initial audit changed only this report. The six-item implementation added bounded inventory validation, membership-default tests, administration accessibility coverage and a page-level landmark correction, made legacy tests' compatibility mode explicit, and clarified membership documentation while preserving plan 003. The owner subsequently authorized amending that plan for ARCH-05/06/07. Revision 1.8 records D11; this final reconciliation changes documentation only because the verified implementation already meets it. Revision 002 remains absent as committed by the user.
 
 **Requirement totals:** 117 individual requirements; related rows may share one underlying cause.
 
 | Status | Count |
 | --- | ---: |
-| `DONE` | 97 |
+| `DONE` | 101 |
 | `PARTIALLY_DONE` | 0 |
 | `MISSING` | 0 |
 | `NEEDS_MODIFICATION` | 0 |
 | `ASSUMPTION` | 2 |
-| `EXTERNAL_DECISION_REQUIRED` | 4 |
-| `CONFLICT` | 3 |
+| `EXTERNAL_DECISION_REQUIRED` | 3 |
+| `CONFLICT` | 0 |
 | `OUT_OF_SCOPE` | 11 |
 
 `DONE` means the particular requirement has a traced implementation and relevant evidence; it does not certify every runtime surface, deployment configuration, or the entire release. `NEEDS_MODIFICATION` identifies existing incorrect behavior. `PARTIALLY_DONE` identifies a concrete unfinished implementation/proof deliverable. Community proposals and historical ideas are classified separately from accepted requirements.
@@ -29,9 +31,9 @@ The initial audit changed only this report. The subsequent authorized implementa
 
 ### Repository and authoritative plan
 
-- [Revision 003](<auth_share_implementation_plan_updated_latest 003.md>), revision 1.7, all sections, including the PC-01–PC-26 and TX-01–TX-18 contracts, eight journeys, work packages, and completion checklist. SHA-256: `BFE357D1957961D625E24C7E70ED2B52AD697DD71C29E0D4B6D435E11350747B`.
-- Current checkout: `E:\ABC\langflow`, branch `main`, commit [`b2b2172106a95367ebaf320c10b558e9f23537e9`](https://github.com/waqoor/langflow/commit/b2b2172106a95367ebaf320c10b558e9f23537e9), subject `finalized UI`.
-- [Repository instructions](AGENTS.md), particularly lines 108–145. They explicitly describe a fork with Casbin installed, registered, and enabled by default. That explains the current choice but does not erase the audit's required comparison with revision 003.
+- [Revision 003](<auth_share_implementation_plan_updated_latest 003.md>), now revision 1.8 with owner-approved D11. The original audit covered all sections of revision 1.7, including PC-01–PC-26, TX-01–TX-18, the eight journeys and completion criteria. Its historical SHA-256 is `BFE357D1957961D625E24C7E70ED2B52AD697DD71C29E0D4B6D435E11350747B`. D11 supersedes only fork packaging/default requirements and the associated delivery decision.
+- Current checkout: `E:\ABC\langflow`, branch `main`, HEAD `5111f56569b8626a27d3b616328b1c03779bdb2a`. The initial audit used `b2b2172106a95367ebaf320c10b558e9f23537e9`; full acceptance used `944b35148d0ef8d72c6613b5b0164b2f32799bee`. Exact Git object comparisons establish current functional-source equivalence.
+- [Repository instructions](AGENTS.md), particularly lines 108–145, describe bundled/default-enabled Casbin and explicit service replacement. D11 aligns the approved fork plan with that contract; it does not claim unchanged revision 1.7 compliance.
 - Current upstream `main` was resolved through GitHub to `595cd72a2b2021f2375fa31109af02d20bb17648`. The local upstream tracking ref was older (`e3abffc1b8da1e38cc2f21a9cf1b23b4a21c15d5`); it was not presented as current upstream.
 - Upstream [authorization factory](https://github.com/langflow-ai/langflow/blob/595cd72a2b2021f2375fa31109af02d20bb17648/src/backend/base/langflow/services/authorization/factory.py), [pluggable services](https://github.com/langflow-ai/langflow/blob/595cd72a2b2021f2375fa31109af02d20bb17648/src/lfx/PLUGGABLE_SERVICES.md), and `AGENTS.md` were fetched and compared with the fork. Upstream retains the pass-through default and the registration boundary.
 - Current models, migrations, compiler/model/store/service, identity and resource lifecycle writers, route guards/fetch/listing, public transports, execution, frontend queries and controls, tests, CI selection/aggregation, and documentation were inspected. Searches included execution/build, monitoring, jobs, variables, providers, files, memory, and project code outside directories named `auth` or `share`.
@@ -101,10 +103,10 @@ Sources marked `P` refer only to revision 003. `C1`–`C10` resolve to the chron
 | ARCH-01 | Keep `authz_*`, users, and resources canonical | P §§4–6; C2/C8 | DONE | Immutable compiler snapshots read canonical rows; Casbin rules are derived. | AZ/casbin/compiler.py::PolicySnapshot; AZ/casbin/store.py::canonical_snapshot | None found in the traced path. |
 | ARCH-02 | Preserve `BaseAuthorizationService` as the application seam | P §4; C2/C8 | DONE | Factory, guards, capabilities, lifecycle, and listing use the registered service. | LFX/services/authorization/base.py; AZ/guards.py::ensure_permission | None. |
 | ARCH-03 | Use one grant/team decision engine; remove native fallback | P §§4.5,7; C6/C8 | DONE | Selected Casbin service owns decisions; compatibility `effective_access` delegates to it. Pass-through service is a separate explicit compatibility selection. | AZ/casbin/service.py; AZ/repository.py::effective_access; AZ/service.py | No production `team_operation_allowed` fallback found. |
-| ARCH-04 | Keep LFX provider/policy-engine free | P §4.3 | DONE | LFX owns contracts and no-op defaults; compiler, SQL persistence, Casbin dependency live in backend. | LFX/services/authorization; src/lfx/pyproject.toml; src/backend/base/pyproject.toml | Shared enforcement default flag separately conflicts in ARCH-07. |
-| ARCH-05 | Install Casbin through an optional backend extra | P §4.3; C8; upstream foundations | CONFLICT | Casbin is now mandatory in `langflow-base`; `authorization` is a compatibility alias. | src/backend/base/pyproject.toml:21; AGENTS.md:110 | Resolve fork-vs-contribution packaging with EXT-01/02. |
-| ARCH-06 | Select the enforcing candidate explicitly via existing registration | P §§4.3–4.4,18; C8 | CONFLICT | Backend factory/service bootstrap default to Casbin without `lfx.toml`. Custom replacement remains supported. | AZ/factory.py; services/utils.py:634–652; AGENTS.md:110 | Decide authorized delivery target; do not silently relabel default selection as optional. |
-| ARCH-07 | Preserve default non-enforcing OSS behavior absent selection | P §§4.4,18; upstream PR 13153 | CONFLICT | `AUTHZ_ENABLED` defaults true in shared settings. Explicit false retains owner-scoped compatibility. | LFX/services/settings/auth.py:283; AZ/guards.py:266; AGENTS.md:112 | Align chosen target, defaults, tests, and docs after EXT-02. |
+| ARCH-04 | Keep LFX provider/policy-engine free | P §4.3 | DONE | LFX owns contracts and no-op defaults; compiler, SQL persistence and Casbin dependency live in backend. | LFX/services/authorization; src/lfx/pyproject.toml; src/backend/base/pyproject.toml | Standalone LFX remains non-enforcing under D11; current test passes. |
+| ARCH-05 | Bundle Casbin in the fork backend; preserve the compatibility extra and provider-free LFX | P D11, §§4.3,20.2 | DONE | Backend metadata includes Casbin unconditionally; authorization remains a compatibility extra. Installed model/package evidence matches current source. | src/backend/base/pyproject.toml:21,202; AT/test_factory.py; verification ledger D11 record | Original optional-backend requirement is explicitly superseded for the fork, not relabeled as satisfied. |
+| ARCH-06 | Register default Casbin through the existing factory while preserving explicit replacement | P D11, §§4.3–4.4,18 | DONE | Bootstrap selects Casbin without lfx.toml. Real config discovery before/after registration preserves an explicit replacement through repeated bootstrap. Initialization failure propagates. | AZ/factory.py; services/utils.py:644; AT/test_factory.py; registration-probes.json | No new selector, registry or native fallback; upstream adoption remains separate. |
+| ARCH-07 | Enable fork enforcement by default; retain explicit disable and standalone LFX behavior | P D11, §§4.4,18,20.2 | DONE | Unset-flag install selects enabled Casbin; explicit false disables it. LFX remains non-enforcing. Casbin readiness still requires canonical reconciliation. | LFX/services/settings/auth.py:283; AZ/guards.py:266; AT/test_factory.py; verification ledger D11 record | Current tests/probes pass; compatibility and enabled acceptance use source identical to the full validated candidate. |
 | ARCH-08 | Preserve configurable superuser bypass after ceilings | P §§4,7; C4/C8 | DONE | Active canonical `User.is_superuser` plus configured bypass; external ceiling precedes allow. | AZ/casbin/service.py::_resource_allows; AZ/team_management.py::actor_can_administer_platform | A built-in role named admin is not Platform Admin. |
 | AUTH-01 | Preserve password/JWT authentication and active-user checks | P §§2,18 | DONE | Existing login, verification key, token type/expiry, user lookup, and inactive rejection remain; real browser users log in separately. | AUTH/service.py:511–580; AUTH/utils.py; E2E::authenticatePage | No authentication replacement required. |
 | AUTH-02 | Preserve API-key authentication and credential identity | P §§4,12,18 | DONE | Shared authenticator validates active identity; credential context retains key identity. | AUTH/service.py:899–919; DB/api_key/crud.py; AUTH/context.py | No new fine-grained API-key scope feature inferred; plugin capability remains explicit. |
@@ -200,12 +202,12 @@ Sources marked `P` refer only to revision 003. `C1`–`C10` resolve to the chron
 | TEST-05 | Current combined backend, LFX, frontend, build, container and docs checks | P §§20–23 | DONE | Final candidate 944b35148d passes combined CI: 70 successful jobs, eight conditional skips, zero failures/cancellations. Required matrix/journeys, all ten general backend groups, LFX, Jest, core browser, ARM64 and docs pass. | run 34374100600; CI Success job 102557878667; docs/auth-team-sharing-verification.md; section 11 | The ledger retains exact executed/skipped/retried counts, installed-package source equivalence, zero introduced TypeScript diagnostics and existing third-party Python typing limits. |
 | TEST-06 | Current affected accessibility evidence and explicit manual limits | P §20.8 | DONE | Final candidate passes all eight journeys once and all 101 accessibility unit suites / 447 tests. Nine hosted IBM scans retain zero confirmed/ignored violations, 13,880 passing rule results, and 182 potential/four potential-recommendation/nine manual results. | E2E::expectTeamPageReflow; FE/pages/admin-users/__tests__/admin-users-page.a11y.test.tsx; run 34374100600 job 102543503704; docs/auth-team-sharing-verification.md | The report states the selected-engine scope and unresolved potential/manual limits; human screen-reader, native Windows high-contrast and general editor isolation are not certified. |
 | TEST-07 | Both authz CI jobs mandatory when selected | P §§20–23 | DONE | Path/run-all selection and aggregate success gate require backend and eight-journey jobs; normal mode excludes only separately owned directory. | .github/workflows/ci.yml; scripts/ci/test_authz_workflow_contract.py | 21 focused inventory/workflow tests and all 160 final-candidate CI-script tests pass. |
-| DOC-01 | Explain actual canonical engine, ownership, lifecycle, compatibility | P §24/WP-07 | DONE | Current architecture and fork default are documented; historical native evidence remains labeled. | AGENTS.md; src/lfx/PLUGGABLE_SERVICES.md; docs/auth-team-sharing-verification.md | Contract conflict separately requires resolution; docs do not prove behavior. |
-| DOC-02 | Reconcile current target and final evidence before declaring complete | P §24/WP-07 | DONE | Affected docs describe the existing fork default, locally managed memberships and explicit external-integration boundary. The audit and ledger identify final candidate 944b35148d, completed validation, prior failed/superseded attempts and precise limits. | AGENTS.md; docs/docs/Develop/authorization.mdx; docs/docs/Develop/external-authentication.mdx; docs/auth-team-sharing-verification.md | Revision 003 is unchanged. The optional/upstream contract differences and external proposals remain classified outside this six-item follow-up; no upstream-adoption or broader completion claim is added. |
+| DOC-01 | Explain actual canonical engine, ownership, lifecycle, compatibility | P §24/WP-07 | DONE | Current architecture and fork default are documented; historical native evidence remains labeled. | AGENTS.md; src/lfx/PLUGGABLE_SERVICES.md; docs/auth-team-sharing-verification.md | D11 resolves the fork contract; behavior is established by separate implementation evidence. |
+| DOC-02 | Reconcile current target and final evidence before declaring complete | P §24/WP-07 | DONE | Docs describe the fork default, local membership and external-integration boundary. Audit/ledger identify validated candidate 944b35148d, current equivalence, fresh D11 checks, earlier attempts and limits. | AGENTS.md; docs/docs/Develop/authorization.mdx; docs/docs/Develop/external-authentication.mdx; docs/auth-team-sharing-verification.md; plan.md | The six-item follow-up preserved plan 003; explicit D11 approval subsequently amends it to revision 1.8. Upstream adoption remains separate. |
 | ASM-01 | Trusted external JWT mode sits behind a validating proxy | Existing external-auth contract | ASSUMPTION | Explicit mode skips local signature/audience/issuer verification; code cannot inspect a deployment's actual ingress trust. | AUTH/external.py:343–423 | Verify only when deploying that mode; default to signature/audience verification. |
 | ASM-02 | Every deployed writer of canonical authorization rows participates in the lock/hook transaction | P §6.8 | ASSUMPTION | In-repository mutation routes participate. No external directory writer or direct SQL job is demonstrated; default ingestion is no-op. | AZ/lifecycle.py; AZ/casbin/store.py; AUTH-07 | Inventory deployment integrations and reject unsupported out-of-band writes; no global freshness claim for an unverified writer. |
 | EXT-01 | Upstream acceptance of enforcing Casbin candidate placement/adoption | P §4.1/WP-02; C8 | EXTERNAL_DECISION_REQUIRED | Technical implementation exists; issue contains no maintainer acceptance of this adoption. | C8/C9; upstream factory; fork PR 1 | Upstream maintainers decide; not a new runtime approval mechanism. |
-| EXT-02 | Choose whether completion means fork contract or upstream-compatible contribution | Conflict among P, C8, current AGENTS/code | EXTERNAL_DECISION_REQUIRED | Fork deliberately defaults Casbin on; authoritative audit plan specifies optional selection. | ARCH-05/06/07 | Repository owner resolves target; upstream decides acceptance if contributing there. |
+| EXT-02 | Choose fork contract or upstream-compatible contribution | Owner-approved P D11 | DONE | User approved bundled, automatically registered, default-enabled Casbin for the fork and requested plan amendment and implementation verification. | P revision 1.8; ARCH-05/06/07; plan.md | Fork-owner approval resolves the target without establishing maintainer acceptance. |
 | EXT-03 | Adopt C10's durable per-run owner/executor evidence proposal | C10 | EXTERNAL_DECISION_REQUIRED | Caller/job and decision actor metadata exist; no demonstrated mandatory linked per-run owner/executor event across every mode. | AZ/audit.py; AZ/guards.py:260–263; DB/jobs/model.py; API/v1/endpoints.py:505–523 | Product/security may accept, reject, or defer; community proposal is not itself a blocker for the existing plan. |
 | EXT-04 | Identify the supported authoritative source-managed membership integration | P §§6.8,8.3–8.4; AUTH-07 | EXTERNAL_DECISION_REQUIRED | No provider claim-to-team mapping or selected Casbin ingester is configured by this implementation. The framework seam alone cannot define an external source's authority. | AUTH/service.py:652–665; LFX/services/authorization/base.py:728–770 | Integration owner must state whether this deployment supports such a writer and its verified mapping/transaction contract; do not add arbitrary provider features. |
 | OOS-01 | Real-time simultaneous co-editing/OT/CRDT/WebSockets | Historical 1864/1735; P exclusions | OUT_OF_SCOPE | Optimistic concurrency is implemented; live co-editing is not required here. | P §11; AZ/concurrency.py | No replacement collaboration system proposed. |
@@ -218,7 +220,7 @@ Sources marked `P` refer only to revision 003. `C1`–`C10` resolve to the chron
 
 ## 4. Missing Implementation
 
-**No remaining in-scope requirement is classified `MISSING`, `NEEDS_MODIFICATION` or `PARTIALLY_DONE`.** The six original partial implementation/proof deliverables are complete. Conflicting defaults, conditional external decisions and assumptions are listed separately. Items deferred by the user remain `OUT_OF_SCOPE`; their exclusion is not evidence of completion.
+**No remaining in-scope requirement is classified `MISSING`, `NEEDS_MODIFICATION`, `PARTIALLY_DONE` or `CONFLICT`.** The six original partial items and three D11 fork-default items are complete. Conditional external decisions and deployment assumptions remain separate. User-deferred items remain `OUT_OF_SCOPE`; exclusion is not evidence of completion.
 
 ## 5. Resolution of the Six Original Partial Items
 
@@ -278,9 +280,19 @@ The completed six-item follow-up is detailed below. Security/dependency/history 
 
 **Requirement/source:** P WP-07 and §23. The repository instructions establish the current fork's default Casbin behavior; P/C8 describes an optional upstream candidate. This follow-up preserves the existing fork and explicitly distinguishes those contracts.
 
-**Completed work:** affected authorization/external-authentication docs and `AGENTS.md` state the established local-membership default and configured-integration boundary. The audit and verification ledger now record final candidate `944b35148d`, complete current CI, installed-package/default/custom-service checks, typing baselines, accessibility scope and earlier failed/superseded runs. Existing execution-identity, backup and migration/preflight instructions remain applicable. Revision 003 remains unchanged at its recorded SHA-256.
+**Completed work:** authorization/external-authentication docs and `AGENTS.md` state the local-membership default and integration boundary. The six-item follow-up recorded candidate `944b35148d`, complete CI, package checks, typing/accessibility limits and prior attempts while preserving plan 003. Subsequent D11 reconciliation amends the plan and records current source equivalence and fresh default/override checks. Existing execution-identity, backup and migration/preflight instructions remain applicable.
 
-**Scope:** ARCH-05/06/07 and the conditional external decisions retain their audit classifications. This documentation closure does not claim optional-upstream compatibility, upstream adoption, unsupported directory synchronization or validation of untested deployment/assistive-technology environments.
+**Scope:** the six-item closure originally left ARCH-05/06/07 and EXT-02 unresolved; subsequent approved D11 resolves them below. Neither closure claims optional-upstream compatibility, maintainer acceptance, directory synchronization or validation of untested deployment/assistive-technology environments.
+
+### D11 — Three fork-default conflicts resolved (`DONE`)
+
+**Requirement/source:** owner approved the fork-default recommendation and requested its addition to plan 003, implementation verification and an updated `plan.md`. Revision 1.8 reconciles packaging, registration, compatibility, module, CI and completion clauses.
+
+**Implementation:** `langflow-base` already bundles Casbin and retains the compatibility extra. Existing bootstrap selects it by default and preserves explicit replacements. Enforcement defaults on, explicit false remains supported, and standalone LFX has no Casbin dependency or enabled enforcement. No runtime change is needed for this approved contract.
+
+**Fresh proof:** all 10 tests in `AT/test_factory.py` pass with one upstream Starlette deprecation warning. Four isolated real-discovery probes pass: default/no configuration, explicit disable, and `lfx.toml` replacement discovered before or after bootstrap. Repeated registration preserves the replacement. Pass-through replacements advertise no team/sharing support; Casbin remains unready before canonical initialization.
+
+**Combined/source proof:** exact Git object comparisons show `src`, `pyproject.toml`, `uv.lock`, `.github`, `scripts` and `docker` at HEAD `5111f56569` are identical to validated candidate `944b35148d`. Installed-wheel/model proof is linked through unchanged backend/LFX package and lockfile objects. CI `34374100600` was rechecked as successful; it was not rerun for this documentation-only amendment. The ledger records commands, provenance and limits.
 
 ## 6. Assumptions
 
@@ -291,7 +303,7 @@ The completed six-item follow-up is detailed below. Security/dependency/history 
 
 Neither assumption permits an allow after a known service failure. Missing/invalid policy, inactive users, unknown actions and unavailable collaboration capabilities remain denials. These deployment conditions are not substitutes for implementation evidence.
 
-## 7. External Decisions / Discussions Required
+## 7. External Decisions and Their Disposition
 
 ### EXT-01 — Upstream adoption and placement
 
@@ -302,14 +314,12 @@ Neither assumption permits an allow after a known service failure. Missing/inval
 - **Neutral default:** describe the fork accurately and leave upstream adoption pending; do not claim acceptance or revert authorized fork behavior during this audit.
 - **Decision owner:** upstream maintainers for adoption; repository owner for the contribution response. This is a source-stated contribution prerequisite, not a new runtime gate.
 
-### EXT-02 — Delivery contract that defines completion
+### EXT-02 — Delivery contract resolved by D11 (`DONE`)
 
-- **Question:** does completion target the fork's mandatory/default-on Casbin contract or P/C8's optional, explicitly selected upstream-compatible candidate?
-- **Why code cannot answer/source:** live fork instructions/code and the designated audit plan explicitly disagree on dependency, selection and enforcement defaults.
-- **Current behavior:** mandatory dependency, default Casbin registration, enforcement true, explicit false compatibility and custom registration support.
-- **Options/consequences:** retain the fork target and explicitly reconcile its plan/contribution expectations; or align delivery with P/C8 at the existing dependency/registration boundary. Either requires matching tests/docs; neither warrants a second evaluator.
-- **Neutral default:** preserve current functionality and classify ARCH-05/06/07 as conflicts. The target decision does not prevent verifying the remaining implemented collaboration behavior.
-- **Decision owner:** repository/product owner. Permission to continue this audit does not specify which contradictory default contract should replace the other.
+- **Original conflict:** revision 1.7 specified optional installation, explicit selection and default-disabled behavior while the fork deliberately shipped opposite defaults.
+- **Approved decision:** owner accepted the fork-default recommendation and requested plan amendment and implementation verification. D11 records bundled Casbin, automatic registration and default-enabled enforcement, with explicit disable/replacement and standalone LFX compatibility.
+- **Evidence:** 10 focused tests, four real-discovery probes and source comparisons pass. ARCH-05/06/07 are resolved under revision 1.8, not claimed compliant with unchanged revision 1.7.
+- **Boundary:** upstream acceptance remains EXT-01. No owner decision remains pending for this fork delivery.
 
 ### EXT-03 — Per-run owner/executor evidence proposed in C10
 
@@ -341,7 +351,7 @@ Neither assumption permits an allow after a known service failure. Missing/inval
 | Eventual broadcast/reload/TTL correctness | C8/P fresh admission and early atomic differential writes | Per-admission enforcer and DB transaction protocol | Resolved for participating writers; ASM-02 remains |
 | Suspended team has no management authority | C8 active members retain allowed inspection/repair | Separate team-role and resource edges | Resolved |
 | Broad wildcard management/future actions | C4/C8 finite vocabulary/exact team and actions | Exact action matching and enumerated expansion | Resolved; no silent future privilege |
-| P/C8 optional extra, explicit registration, upstream default off | Current fork deliberately mandates/defaults Casbin on | Dependency, factory/bootstrap and flag all changed | ARCH-05/06/07 `CONFLICT`; EXT-01/02 must name target |
+| Revision 1.7/C8 optional extra, explicit registration, upstream default off | Owner-approved D11 selects bundled/default-on Casbin for the fork | Existing dependency/factory/settings implementation, 10 current tests and four real-discovery probes | ARCH-05/06/07 and EXT-02 DONE under revision 1.8; EXT-01 remains separate |
 | Historical SSO/live co-edit/history requests | P limits product scope and preserves existing auth seams | Current auth, optimistic concurrency and sharing | OOS-01/02/03 absent separate adoption |
 | PR 13153 decorator/DI suggestion | Review explicitly nonblocking | Established guards/fetch helpers retained | OOS-06; not grounds for redesign |
 | Contributor assertion counts or older hosted green runs | P requires actual combined application, database and UI proof | Current focused results and older full ledger | Evidence, not current universal acceptance |
@@ -391,7 +401,7 @@ flowchart TD
 
 **Readiness/repair:** initialization uses the same lock/compiler and rejects malformed/foreign policy or invalid legacy rosters. Explicit repair uses supplied disposition; request handling does not promote admins or replace prior-provider rules silently. Readiness and capabilities fail closed. Packaged `model.conf` is required; TEST-05 records its installed-artifact proof and exact source equivalence to the final candidate.
 
-No competing production role/share/team evaluator or duplicate authoritative persistence was found in the inspected path. Packaging/default selection remains conflicted, current combined acceptance is incomplete, and the supported source-managed lifecycle needs an explicit boundary. No replacement engine or parallel runtime is justified.
+No competing production role/share/team evaluator or duplicate authoritative persistence was found in the inspected path. D11 resolves packaging/default selection, the six-item follow-up supplies combined acceptance, and AUTH-07 establishes the locally managed membership boundary. Source-managed synchronization remains conditional on a separately requested integration. No replacement engine or parallel runtime is justified.
 
 ## 10. Authorization Enforcement Matrix
 
@@ -604,7 +614,7 @@ The plan's work packages resolve as follows; these are a crosswalk to section 3,
 | Plan work package | Current closure evidence | Remaining item |
 | --- | --- | --- |
 | WP-01 Rebaseline without reopening scope | Current HEAD, plan 003, all ten comments and relevant upstream sources reviewed; superseded ideas separated | Completed for this audit, with the user's later exclusions recorded |
-| WP-02 Packaging and upstream acceptance | Actual mandatory dependency/default registration traced; optional upstream proposal identified | ARCH-05/06/07 and EXT-01/02 |
+| WP-02 Packaging and upstream acceptance | Owner-approved D11, existing fork implementation and fresh default/override/package checks | ARCH-05/06/07 and EXT-02 complete; EXT-01 remains conditional on upstream adoption |
 | WP-03 Corrected model/compiler | Four-field model, finite grammar and all PC-01–PC-26 mapped to implementation/tests | Final combined execution passed under WP-06 |
 | WP-04 Registered service/native removal | One selected Casbin service, delegating compatibility seam, no competing native evaluator found | Default-selection disagreement remains WP-02, not a missing engine |
 | WP-05 Ordering/storage/fresh reads | Early locks, coherent admissions, atomic differential projection and TX-01–TX-18 tests; final backend matrix passes | AUTH-07 default boundary established; ASM-02 remains deployment-specific |
@@ -619,11 +629,11 @@ As instructed later by the user, further security/secrets review was deferred. E
 
 ## 12. Exact Remaining Work
 
-No work remains in the authorized six-item follow-up: AUTH-07, TEST-02, TEST-04, TEST-05, TEST-06 and DOC-02 are complete. The table retains separately classified plan conflicts and conditional external decisions outside those six items. Deferred security/secrets/history items are not included, and unaccepted proposals are not mandatory code gates.
+No work remains in the six-item follow-up or subsequent D11 reconciliation: AUTH-07, TEST-02, TEST-04, TEST-05, TEST-06, DOC-02, ARCH-05/06/07 and EXT-02 are complete. The table retains conditional external decisions and deployment assumptions outside that delivery. Deferred security/secrets/history items remain excluded, and unaccepted proposals are not mandatory code gates.
 
 | Priority | ID | Work Required | Dependency | Code Change? | External Decision? | Validation |
 | --- | --- | --- | --- | --- | --- | --- |
-| HIGH | EXT-02 / ARCH-05–07 | Select fork-default or optional upstream-compatible target; align only the chosen established boundary | Plan/current contract conflict | Conditional | Repository owner; upstream adoption separate | Default/disabled/explicit/custom registration and package tests |
+
 | MEDIUM | EXT-04, only for a future external integration | Identify authority/mapping before adding a directory writer; the current local-membership default already closes AUTH-07 | A separately requested integration | Conditional future work | Integration/deployment owner | Source removal, suspension, provenance survival, rollback/fresh admission |
 | MEDIUM | ASM-01/02 | Verify selected deployment trust/writer assumptions; document unsupported cases | Deployment inventory; only applicable modes | Configuration/docs; conditional adapter work | Deployment/identity owner | Verified ingress contract and canonical writer participation |
 | MEDIUM | EXT-01 | Obtain upstream placement/adoption response if completion includes upstream contribution | Concrete reviewed candidate and EXT-02 | Conditional contribution alignment | Upstream maintainers | Recorded actual response; no inferred approval from C9/old PRs |
@@ -636,7 +646,7 @@ No work remains in the authorized six-item follow-up: AUTH-07, TEST-02, TEST-04,
 - [x] Canonical `authz_*` state, one registered decision service, finite role/team/share compiler and rebuildable projection are implemented.
 - [x] Team management is separate from resource authority; scoped roles, project inheritance, direct-flow isolation and conditional writes are implemented.
 - [x] AUTH-07: the existing local-membership default and external-writer limitation are explicitly established and tested without claiming synchronization.
-- [ ] ARCH-05/06/07: actual dependency/selection/default behavior matches the chosen delivery contract.
+- [x] ARCH-05/06/07: dependency/selection/default behavior matches owner-approved D11, with fresh focused and source-equivalent combined evidence.
 
 ### Test/validation completion criteria
 
@@ -650,24 +660,24 @@ No work remains in the authorized six-item follow-up: AUTH-07, TEST-02, TEST-04,
 
 ### Documentation completion criteria
 
-- [x] DOC-02: affected documentation accurately describes the fork's registration/default instructions, execution identity and local-membership support; the optional upstream target difference remains explicitly classified outside this follow-up.
+- [x] DOC-02: affected documentation describes the fork's registration/default instructions, execution identity and local-membership support. D11 now resolves the fork target; upstream adoption remains separate.
 - [x] Final evidence distinguishes the tested functional SHA from older hosted candidates and separates executed passes, exclusions, baseline failures and unavailable validation.
 - [x] Historical evidence remains labeled; no unsupported upstream-adoption, universal safety or full accessibility certification claim is made.
 
 ### External/upstream decision criteria
 
-- [ ] EXT-02: repository owner resolves the fork-versus-upstream-compatible completion target.
+- [x] EXT-02: owner approved the fork target; plan 003 revision 1.8 reconciles the affected requirements.
 - [ ] EXT-01: when upstream adoption is part of completion under P/WP-02, actual maintainer acceptance/placement is recorded. This is not required to claim merely that local fork code exists.
 - [x] The local-membership delivery boundary is stated and tested. EXT-04 remains conditional on a future external membership integration.
 - [ ] EXT-03: proposal disposition may be recorded, but its acceptance is **not** a blocker for the already established plan unless it becomes a new requirement.
 
-**Whole-plan/upstream-compatible verdict: `NOT DONE`; this is broader than the authorized six-item follow-up.**
+**Authorized implementation follow-ups and fork-default reconciliation: `DONE`. Upstream adoption and unverified deployment/excluded work are not included in this verdict.**
 
-All six authorized follow-up items—AUTH-07, TEST-02, TEST-04, TEST-05, TEST-06 and DOC-02—are complete, with final combined validation and its limits recorded. The candidate preserves the fork's documented default-on Casbin contract and the authoritative plan file.
+All six authorized follow-up items—AUTH-07, TEST-02, TEST-04, TEST-05, TEST-06 and DOC-02—are complete, with combined validation and its limits recorded. Subsequent D11 resolves ARCH-05/06/07 and EXT-02 through the approved plan revision and verified existing fork implementation.
 
 The separately classified items remain outside that implementation scope:
 
-- ARCH-05/06/07 and EXT-02 describe the fork-versus-optional-upstream contract difference. Documentation identifies that difference; it does not claim upstream compatibility or change the fork's defaults.
+- Upstream optional packaging/adoption remains a separate contribution boundary. D11 resolves the fork contract without claiming upstream compatibility or maintainer acceptance.
 - ASM-01/02 apply to deployment-specific identity and canonical-writer configurations. EXT-04 is relevant only to a future external membership integration; the current local-membership boundary is established and tested.
 - EXT-01 concerns actual upstream adoption if that contribution is requested. C10/EXT-03 remains an unaccepted proposal rather than a new implementation requirement.
 

@@ -1,7 +1,7 @@
 # Authentication, Authorization, Teams, and Resource Sharing — Implementation Plan
 
-**Document revision:** 1.7  
-**Revision date:** September 7, 2026  
+**Document revision:** 1.8  
+**Revision date:** September 10, 2026  
 **Source document:** `auth_share_implementation_plan_updated_latest 002(1).md`, Revision 1.6  
 **Implementation repository:** `waqoor/langflow`  
 **Existing contribution branch:** `feat/auth-team-sharing`  
@@ -9,11 +9,23 @@
 **Upstream reference:** `langflow-ai/langflow`  
 **Related issue:** `langflow-ai/langflow#14932`
 
-**Selected technical design:** one optional, registered, in-process Casbin-backed `BaseAuthorizationService` implementation within the existing Langflow backend package. This is a replacement of the native policy-decision core, not an additional evaluator.
+**Selected technical design:** one bundled, registered, in-process Casbin-backed `BaseAuthorizationService` implementation within the existing Langflow backend package, installed and enabled by default for `waqoor/langflow`. This is a replacement of the native policy-decision core, not an additional evaluator.
 
-**Decision status:** the contributor has selected this design. Upstream maintainer acceptance of production adoption and source-tree packaging is **not established by the supplied evidence**. The existing requirement for that acceptance is not silently waived by this document. The native implementation remains the deployed baseline until the approved, fully validated replacement is ready; there is no native/Casbin runtime selector.
+**Decision status:** the repository owner explicitly approved the fork-default recommendation and requested this amendment and its implementation verification. D11 resolves audit decision EXT-02 and the target for ARCH-05/06/07. Upstream maintainer acceptance remains **not established** and is required for an upstream adoption claim, separately from completion of this fork delivery. There is no native/Casbin runtime selector.
 
-**Validation status:** the supplied records describe a validated native implementation and a contributor-reported standalone Casbin assertion suite. The combined registered Langflow–Casbin implementation, transaction store, and E2E suite have **not** been executed or validated by this plan revision. All new acceptance criteria remain unverified until supported by final-candidate evidence.
+**Validation status:** the verification ledger records combined Casbin acceptance on functional candidate `944b35148d0ef8d72c6613b5b0164b2f32799bee`. Current HEAD `5111f56569b8626a27d3b616328b1c03779bdb2a` has identical runtime/test/build/CI source. D11 verification passes 10 focused tests and four isolated real-configuration probes. The existing implementation satisfies the approved contract; this round changes documentation only. Historical native and standalone model results remain separate evidence; this amendment does not certify excluded work or upstream adoption.
+
+### Approved fork-delivery amendment — D11
+
+This amendment implements the user's explicit instruction to add the recommended resolution of ARCH-05/06/07 to this plan and finalize it. It supersedes only the fork's optional-installation, explicit-selection and default-disabled requirements, and the associated fork-versus-upstream delivery decision. The original revision 1.7 has SHA-256 `bfe357d1957961d625e24c7e70ed2b52ad697dd71c29e0d4b6d435e11350747b`; Section 25 retains its historical provenance.
+
+| Audit item | Approved fork contract | Required evidence |
+|---|---|---|
+| ARCH-05 | `langflow-base` includes Casbin as a normal dependency; `authorization` remains a compatibility extra. Standalone LFX has no Casbin dependency. | Installed distribution metadata, packaged model resources and import checks. |
+| ARCH-06 | The existing backend factory/bootstrap registers Casbin automatically. An explicitly configured `authorization_service` replacement takes precedence. No new registry or engine-selection flag. | Fresh default selection, explicit override preservation and initialization-failure tests. |
+| ARCH-07 | Fork enforcement defaults on; explicit `LANGFLOW_AUTHZ_ENABLED=false` retains owner-scoped compatibility. Standalone LFX remains pass-through/non-enforcing. | Unset-flag fresh install, explicit disable, LFX behavior, readiness and existing collaboration acceptance. |
+
+The canonical state, single evaluator, permission semantics, team/sharing UI, lifecycle protocol, eight journeys and existing exclusions are unchanged. Upstream optional packaging/adoption remains a separate contribution boundary; it is not an unresolved fork-release decision. No upstream submission, deployment, new integration, migration or authorization feature is required by D11. Record completed evidence in `is_auth_done.md`, `docs/auth-team-sharing-verification.md` and the requested root `plan.md`.
 
 ### Recorded baseline — historical identifiers, not a fresh branch-head claim
 
@@ -43,7 +55,7 @@ Requirement text is normative for this contribution. Historical observations and
 
 ## 1. Purpose and non-negotiable contribution boundary
 
-Preserve the already implemented team-based RBAC and project/workflow sharing feature while replacing its native policy evaluator with the selected registered Casbin implementation when the production-adoption prerequisite is satisfied.
+Preserve the already implemented team-based RBAC and project/workflow sharing feature and its single registered Casbin implementation under the approved fork contract D11. Upstream adoption remains separately conditional on maintainer acceptance.
 
 The original plan is already implemented. This is a focused integration and alignment round, not a restart, feature expansion, authentication redesign, or general Langflow refactor. The existing product remains the behavioral baseline. [P1]
 
@@ -129,7 +141,7 @@ These diagrams distinguish data flow from call flow. Routes call the authorizati
 
 At the recorded upstream baseline, Langflow documents a framework-neutral authorization interface, a default pass-through implementation, route guards, canonical `authz_*` tables, and compiled `casbin_rule` storage. LFX exposes configuration-based registration under `authorization_service`. [R1, R2]
 
-This revision selects that registered-service architecture for the contribution. It does not assert that upstream has accepted adding this particular optional implementation, changing its default distribution, or merging the contribution.
+This revision preserves that registered-service architecture and selects D11's default-on packaging for the fork. It does not assert that upstream has accepted the implementation, changed its default distribution, or merged the contribution.
 
 The default OSS stub and the registered enforcing service are different deployment configurations of the existing extension contract. They must not be used as two evaluators or a fallback chain within the enabled collaboration configuration.
 
@@ -137,7 +149,7 @@ The default OSS stub and the registered enforcing service are different deployme
 
 | ID | Selected decision |
 |---|---|
-| D01 | Registered, in-process backend Casbin implementation; optional dependency; no new monorepo package or service registry. |
+| D01 | Registered, in-process backend Casbin implementation; bundled backend dependency for the fork under D11; no new monorepo package or service registry. |
 | D02 | One four-field request, literal domain equality, exact actions, one grouping relation, constrained internal object matching. |
 | D03 | Canonical role inheritance flattened with role/assignment scope intersection and explicit permission expansion. |
 | D04 | Team sharing membership and exact-team management authority use separate principal meanings through the same `g`. |
@@ -147,6 +159,7 @@ The default OSS stub and the registered enforcing service are different deployme
 | D08 | Capabilities, lists, counts, summaries, and mutations use the same selected policy meaning; no residual Python evaluator. |
 | D09 | Suspension removes team-resource authority without indiscriminately erasing existing management/repair access. |
 | D10 | Native historical CI and community standalone assertions do not constitute combined implementation acceptance. |
+| D11 | Owner-approved fork target: bundled Casbin, automatic registration, default-on enforcement; preserve explicit disable/replacement and provider-free standalone LFX. Upstream adoption remains separate. |
 
 ### 2.5 Community contribution status
 
@@ -262,12 +275,12 @@ Unknown actions, malformed identities, invalid scopes, unsupported public contra
 
 The contributor has selected **registered, in-process Casbin packaging**. Do not reopen native-versus-plugin implementation alternatives inside this plan or build both.
 
-The supplied evidence does not establish the maintainer acceptance required by Revision 1.6 for production adoption. Therefore:
+The original Revision 1.7 required maintainer acceptance before contribution adoption. D11 explicitly separates the approved fork delivery from that upstream prerequisite:
 
-1. Retain the current native implementation as the deployed baseline while that prerequisite is unresolved.
-2. Model/compiler review and isolated tests may proceed without adding a production engine, dependency, selector, or alternate deployment path.
-3. Record authoritative maintainer feedback concerning the registered implementation's source-tree/distribution placement before production integration/cutover under this contribution.
-4. Once accepted, implement the single target described below and run its combined acceptance. Replace, rather than retain, the native policy core.
+1. Preserve and verify the fork's implemented default Casbin service; do not restore the retired native evaluator.
+2. Complete the bounded fork packaging/default/override contract through the existing implementation and acceptance checks.
+3. Record authoritative maintainer feedback before claiming upstream placement/adoption. Fork-owner approval does not establish that acceptance.
+4. Keep one Casbin policy implementation and its combined acceptance. No alternate deployment path or runtime engine selector is introduced.
 5. Do not describe a native-only delivery as completion of this selected Casbin replacement, or historical native CI as validation of it.
 
 This is a contribution/acceptance distinction, not authorization to build an approval service, authority gate, staged deployment, or runtime switching system. If maintainers choose a materially different direction, reconcile this document explicitly; agents must not silently implement another architecture.
@@ -296,20 +309,20 @@ These new paths are the selected proposed layout, not existing files. Reuse an e
 
 `compiler.py` operates on immutable validated snapshots, not HTTP requests or frontend state. `store.py` uses the existing database model/session layer. `service.py` implements the authorization contract and holds no long-lived positive-permission cache.
 
-### 4.3 Registration and optional dependency
+### 4.3 Default registration, dependency and explicit replacement
 
-Use the existing deployment configuration, not a new engine-selection flag:
+The fork's existing backend factory registers Casbin without requiring `lfx.toml`. Explicit service selection or replacement continues to use the existing deployment configuration, not a new engine-selection flag:
 
 ```toml
-# Proposed value in the existing lfx.toml service configuration.
-# This path becomes usable only after the implementation is installed and validated.
+# Optional explicit selection of the fork's already bundled default service.
+# A configured replacement uses this same existing service key and takes precedence.
 [services]
 authorization_service = "langflow.services.authorization.casbin.service:CasbinAuthorizationService"
 ```
 
-Retain `LANGFLOW_AUTHZ_ENABLED` and all existing settings semantics. Installation and service selection are distinct: installing an optional dependency must not automatically replace the OSS service in every deployment. Configuration-based registration is already supported by LFX. [R2]
+Retain `LANGFLOW_AUTHZ_ENABLED`: the fork defaults it to true and respects explicit false. Register the bundled default through the existing backend factory/bootstrap; never overwrite an explicitly configured service. Configuration-based registration is already supported by LFX. [R2, D11]
 
-Declare the Python Casbin dependency in the existing backend package's optional dependency mechanism; choose and document one appropriately named extra using project conventions. Do not add it to LFX, make it unconditional in unrelated distributions, register it through a global import side effect, or introduce a competing entry-point registration that overrides the explicit configuration.
+Declare Python Casbin as a normal `langflow-base` dependency and retain the existing `authorization` extra as a compatibility alias. Do not add Casbin to standalone LFX, register it through a global import side effect, or introduce a competing entry point that overrides explicit configuration. D11's mandatory dependency applies to the fork backend and distributions that include it; it does not change upstream packaging.
 
 PyCasbin is the Python implementation; the referenced Python distribution/import is `casbin`. The reported `1.43.0` fixture version is a reproduction reference, not automatic acceptance of a production pin. Resolve a compatible version through the repository's normal dependency/security process, record the exact locked version, and test supported Python/package combinations. No unrelated dependency upgrades are authorized. [T4]
 
@@ -317,9 +330,9 @@ Include `model.conf` in built wheels and source distributions, and load it via p
 
 ### 4.4 Default compatibility and selected-plugin failure
 
-Without the optional plugin selected, preserve the upstream-approved default pass-through behavior and owner-scoped fetch protections. Do not enable cross-user collaboration merely because `LANGFLOW_AUTHZ_ENABLED=true` while only the default stub is present. [R1]
+The fork normally selects Casbin and enables enforcement. Explicit disabling preserves historical owner-scoped compatibility; an explicitly selected pass-through service retains its owner-scoped fetch protections and does not advertise collaboration capabilities. Standalone LFX remains non-enforcing and provider-free. A true flag alone does not turn a stub into a collaboration service. [R1, D11]
 
-When the collaboration configuration explicitly selects the Casbin implementation, missing dependencies, missing model data, constructor failures, misresolved service selection, unavailable canonical schema, or unusable policy must fail readiness and protected collaboration admission. Do not accept a default stub as proof that the selected plugin loaded.
+When Casbin is selected by the fork default or explicit configuration and enforcement is enabled, missing dependencies, missing model data, constructor failures, misresolved service selection, unavailable canonical schema, or unusable policy must fail readiness and protected collaboration admission. Do not accept a default stub as proof that the selected plugin loaded.
 
 Verify resolved service selection and required collaboration capabilities through the existing factory/service manager and readiness surfaces. If the discovery layer's warning-and-skip behavior can silently substitute a default, make only the smallest authorization-specific validation correction; do not redesign general discovery semantics for unrelated services. The expected selection must come from the trusted deployment configuration, not a client parameter.
 
@@ -344,7 +357,7 @@ Move enforcing responsibilities into the selected implementation, restore defaul
 
 ## 5. Selected policy model and canonical semantics
 
-These requirements define the replacement target after Section 4's adoption prerequisite. They do not authorize an alternative runtime alongside native enforcement.
+These requirements define the fork's single Casbin implementation under Section 4 and D11. They do not authorize an alternative runtime alongside native enforcement.
 
 ### 5.1 Request and identity normalization
 
@@ -758,7 +771,7 @@ Provide one operator-safe verify/rebuild path through existing command/startup c
 
 Before enabling collaboration:
 
-1. Verify expected service selection, optional package/model availability, canonical schema, and existing team invariants.
+1. Verify expected service selection, bundled package/model availability, canonical schema, and existing team invariants.
 2. Establish ownership of this derived projection. Do not silently destroy policy belonging to an unknown/unavailable prior provider merely because it uses the same table; reconcile explicit provider replacement as part of the accepted adoption procedure.
 3. Under the writer protocol, compare and initialize/reconcile required derived policy from current canonical state.
 4. Validate the resulting model/rules and advertise collaboration readiness only after commit and successful load.
@@ -1236,7 +1249,7 @@ Add indexes only when justified by measured filtered-policy loading/query needs.
 
 Reuse the existing `CasbinRule` model and columns. Adapters do not call `create_all()`, create another rule table, add their own engine, or run migrations during enforcement. No generation/cache-authority table or team workspace/organization ownership column is part of the selected design.
 
-The optional backend dependency and packaged `model.conf` are distribution changes, not reasons to add a data migration. Any measured index change must follow the existing forward-only migration process and supported database checks.
+The bundled backend dependency and packaged `model.conf` are distribution concerns, not reasons to add a data migration. Any measured index change must follow the existing forward-only migration process and supported database checks.
 
 ---
 
@@ -1272,15 +1285,15 @@ Capability probes produce no new mutation events and do not trigger policy recon
 
 ## 18. Readiness and failure behavior
 
-### 18.1 Preserve default OSS compatibility
+### 18.1 Fork default and explicit compatibility
 
-An installation that deliberately uses the unchanged default OSS service keeps its existing behavior and owner-scoped fetch floor. Do not globally redefine `AUTHZ_ENABLED` for all unrelated services/plugins.
+D11 selects default-enabled Casbin for the fork. Explicit `LANGFLOW_AUTHZ_ENABLED=false` preserves owner-scoped compatibility. An explicitly selected pass-through service retains its fetch floor, and standalone LFX remains non-enforcing without a Casbin dependency. A configured replacement retains ownership of its service behavior and capability declarations.
 
-The pass-through default must not falsely advertise the selected team's sharing/enforcement capabilities. The optional Casbin implementation is not selected merely by installing its dependency.
+A pass-through service must not falsely advertise team-sharing/enforcement capabilities. The fork's default Casbin selection comes from backend factory/bootstrap registration, not an import side effect or a dependency-installed probe.
 
-### 18.2 Explicitly selected collaboration configuration
+### 18.2 Default or explicitly selected collaboration configuration
 
-When the trusted configuration selects this implementation and enforcement is enabled:
+When the fork default or trusted explicit configuration selects this implementation and enforcement is enabled:
 
 - missing or failed plugin loading is not a successful default-service resolution;
 - absent dependency or packaged model fails readiness;
@@ -1312,10 +1325,10 @@ Paths in this table are relative to the repository root. “Existing” refers t
 | `.../authorization/casbin/compiler.py` | Proposed | Pure immutable-input compiler; role inheritance/scope intersection; team/resource relationship separation; finite actions; normalized deterministic tuples. |
 | `.../authorization/casbin/store.py` | Proposed | Existing async session integration; writer ordering implementation; complete-set reconciliation; coherent filtered loading; no independent engine/commit. |
 | `.../authorization/casbin/model.conf` and `__init__.py` | Proposed | One packaged model and normal package initialization; no automatic engine-selection side effect. |
-| `src/backend/base/pyproject.toml` and existing workspace lockfile | Existing | Optional Python Casbin dependency and model package-data inclusion; no unrelated upgrades or new distribution. |
-| Existing `lfx.toml` / deployment service configuration | Existing seam | Explicit selected `authorization_service` value; do not ship multiple engine choices. |
+| `src/backend/base/pyproject.toml` and existing workspace lockfile | Existing | Bundled Python Casbin dependency, compatibility extra and model package-data inclusion; no unrelated upgrades or new distribution. |
+| Existing `lfx.toml` / deployment service configuration | Existing seam | Optional explicit `authorization_service` replacement takes precedence over the backend default; do not ship multiple policy engines. |
 | `src/backend/base/langflow/services/authorization/service.py` | Existing | Restore approved default OSS semantics at replacement; remove native policy core, not default compatibility floors. |
-| `src/backend/base/langflow/services/authorization/factory.py` and existing discovery/readiness integration | Existing | Verify normal selected-service resolution; do not hard-code an unconditional replacement or rewrite the registry. |
+| `src/backend/base/langflow/services/authorization/factory.py` and existing discovery/readiness integration | Existing | Register default Casbin, preserve explicit replacements and verify selected-service readiness; do not rewrite the registry. |
 | `src/backend/base/langflow/services/authorization/repository.py` | Existing | Retain canonical loaders/registry and non-authoritative prefilters; retire independent effective-permission and scoped-role decisions. |
 | `src/backend/base/langflow/services/authorization/policy.py` | Existing | Retain vocabulary, finite compiler mappings, and roster invariants; retire native request-policy decisions. |
 | `src/backend/base/langflow/services/authorization/team_management.py` | Existing | Convert `require_team_operation()` and team-capability helpers to selected-service decisions; preserve canonical transactions, locks, invariants, and source handling. |
@@ -1348,7 +1361,7 @@ No generic graph framework, new canonical source, independent permission datasto
 
 Find and close all direct runtime consumers of the old policy helpers, including capability and summary paths. Merely moving the main `enforce()` implementation is incomplete.
 
-Verify constructor/import configuration, optional package data, single/batch agreement, capability semantics, direct and list fetch behavior, share-management role paths, creation, lifecycle locks/staging, readiness, public transport exceptions, and historical external-sign-in/session regressions. Use the existing endpoint/persona matrix to find affected paths; do not expand the feature inventory.
+Verify constructor/import configuration, bundled package data, single/batch agreement, capability semantics, direct and list fetch behavior, share-management role paths, creation, lifecycle locks/staging, readiness, public transport exceptions, and historical external-sign-in/session regressions. Use the existing endpoint/persona matrix to find affected paths; do not expand the feature inventory.
 
 ### 19.4 Two-agent implementation discipline
 
@@ -1381,13 +1394,15 @@ Final acceptance must identify the exact combined SHA, selected service configur
 
 Use real built artifacts and actual service discovery where applicable. Cover:
 
-- Default install without the extra: no accidental Casbin imports, correct default stub/fetch floors, no false collaboration capabilities.
-- Optional package installed but not selected: no unconditional replacement of the default service.
+- Default fork install without an extra, `lfx.toml` or opt-in flag: bundled Casbin is selected and enforcement is enabled; readiness still requires valid canonical state.
+- Explicit `LANGFLOW_AUTHZ_ENABLED=false`: owner-scoped compatibility is preserved.
+- Explicit service replacement: application bootstrap preserves it rather than overwriting it with Casbin.
+- Standalone LFX: no Casbin dependency, pass-through decisions and enforcement disabled.
 - Explicit Casbin selection with enforcement enabled: expected service, model resource available, ready policy, and exactly one final evaluator.
 - Missing dependency/model, invalid import/class, constructor failure, misresolved registration, or policy-load failure: selected configuration fails readiness/closed rather than using a default allow path.
 - Existing third-party/default service contracts remain compatible with new no-op lifecycle hooks.
 - Wheels/source distribution include `model.conf`; execution works without a repository working directory.
-- Existing supported Python/package combinations import and load the exact optional implementation; record actual support rather than inferring it from package metadata.
+- Existing supported Python/package combinations import and load the exact bundled implementation, including the compatibility extra; record actual support rather than inferring it from package metadata.
 
 ### 20.3 Policy/compiler acceptance matrix
 
@@ -1510,7 +1525,7 @@ Preserve the existing CI structure, supported runtime matrix, and applicable inh
 
 Required applicable validation includes the real authorization backend matrix; SQLite/PostgreSQL 16; supported Python versions required by the existing workflow; backend/LFX regression; frontend Jest; the eight authz Playwright journeys; inherited core browser checks; migrations; endpoint/persona and CI-script checks; Ruff/Biome/pre-commit/secret checks; scoped typing and existing baseline comparison; affected documentation/accessibility; and candidate package/container/ARM64 checks where selected. [P1]
 
-Make only necessary selection/configuration changes so acceptance genuinely loads the registered Casbin service and exact optional dependency from the final candidate. Both backend and browser jobs must record/assert the expected service and enabled collaboration capability, not just set an environment variable.
+Make only necessary selection/configuration changes so acceptance genuinely loads the registered Casbin service and exact bundled dependency from the final candidate. Both backend and browser jobs must record/assert the expected service and enabled collaboration capability, not just set an environment variable.
 
 Verify:
 
@@ -1518,8 +1533,8 @@ Verify:
 - Distinct browser suites use non-colliding reports/artifacts.
 - Aggregate CI cannot pass by silently skipping the feature suite or ignoring required failures.
 - No blanket skip/xfail, retry inflation, `continue-on-error`, policy mocking, or reduced coverage converts failures to apparent success.
-- Default/no-extra compatibility jobs stay valid without importing Casbin.
-- Built artifacts include model resources and optional installation works in the actual importing distributions.
+- Default/no-extra fork installation selects Casbin; explicit disable/replacement and standalone LFX compatibility checks remain valid.
+- Built artifacts include model resources; normal installation and the compatibility extra work in the actual importing distributions.
 - No released upstream image/package is used as evidence for the unbuilt fork candidate.
 - Historical baseline typing/optional-provider/release-conditional limitations remain explicit and are not relabeled as newly fixed or executed.
 
@@ -1539,17 +1554,17 @@ Capture focused native characterization where current tests do not already speci
 
 **Done when:** current baseline and scope are recorded accurately, agent file ownership is clear, and neither completed features nor unrelated behavior are being recreated.
 
-### WP-02 — Record selected packaging and obtain the missing upstream acceptance
+### WP-02 — Record approved fork packaging and separate upstream acceptance
 
-Record D01 as the selected technical architecture: optional registered in-process implementation in the existing backend package, one `authorization_service` selection, no extra service/package/engine selector.
+Record D01/D11 as the selected fork architecture: bundled registered in-process implementation in the existing backend package, default-enabled enforcement, one `authorization_service` selection with explicit override support, no extra service/package/engine selector.
 
-Check authoritative issue/PR feedback for maintainer acceptance of that placement and production adoption. Do not infer it from community test counts or contributor agreement. While it remains absent, preserve deployed native behavior and perform only the allowed isolated design/model/compiler work.
+Upstream placement/adoption remains a separate contribution decision requiring authoritative maintainer feedback. Do not infer it from community test counts or fork-owner approval. Its absence does not block the owner-approved fork implementation or require restoring native behavior.
 
-Obtain the complete proposed contributor patch/fixtures/Python tests through a reviewable PR, not direct mutation of the working branch. Verify source/provenance through the existing project contribution process. No new CLA or approval infrastructure is introduced.
+If an upstream contribution is requested, use the existing reviewable PR process for the complete patch/fixtures/Python tests. D11 does not request a PR, upstream submission or new approval infrastructure.
 
-Confirm optional dependency identity/version compatibility and the normal registration/model-resource packaging path. Record unknowns as such; do not invent acceptance or select a second architecture.
+Confirm bundled dependency identity/version compatibility, the compatibility extra and the normal registration/model-resource packaging path. Record unknowns as such; do not invent acceptance or select a second architecture.
 
-**Done when:** the selected design and upstream acceptance status are explicit. Production integration starts only when the retained prerequisite is satisfied; a pending condition is not a completed task or a new runtime gate.
+**Done when:** the approved fork contract and its implementation evidence are explicit, and upstream adoption is separately recorded without a false acceptance claim. No new runtime gate is introduced.
 
 ### WP-03 — Prove the corrected minimal model/compiler
 
@@ -1563,7 +1578,7 @@ Use independent expectations and negative/mutation tests for the required semant
 
 ### WP-04 — Implement the registered service and remove native policy paths
 
-After the adoption prerequisite, add the proposed package and optional dependency/model resources; configure the one registered implementation through the existing seam. Preserve non-enforcing/default distribution semantics and add the narrow selected-service readiness checks necessary to prevent silent stub substitution.
+Under D11, verify the existing bundled package/model resources and default registration through the existing seam. Preserve explicit disable/replacement and standalone LFX compatibility, and retain selected-service readiness checks that prevent silent stub substitution. Do not recreate already implemented behavior.
 
 Implement canonical admission context, domain-chain enforcement, batching, capabilities, share-management policy, public-principal compatibility, and visibility using the same compiled representation. Move team capability/mutation decisions together. Preserve the established API creation and authentication/shared-session contracts.
 
@@ -1591,7 +1606,7 @@ Run applicable inherited backend/LFX/frontend/migration/docs/container checks. R
 
 ### WP-07 — Reconcile documentation and contribution delivery
 
-Update only affected `AGENTS.md`/authorization/authentication/sharing documentation, existing service configuration examples, optional installation/model-data notes, endpoint/persona matrices, verification ledger, and current contribution PR/status descriptions.
+Update only affected `AGENTS.md`/authorization/authentication/sharing documentation, existing service configuration examples, bundled installation/compatibility-extra/model-data notes, endpoint/persona matrices, verification ledger, and current contribution PR/status descriptions when applicable. D11 also requires reconciliation of this plan, `is_auth_done.md` and the requested `plan.md`.
 
 Document registration, default versus selected-service behavior, canonical source of truth, domain and role intersection, creation, team-management/resource separation, writer protocol, admission freshness, rebuild, owner/dependency boundaries, actual measured limitations, and exact final candidate evidence.
 
@@ -1609,8 +1624,8 @@ Unchecked items are requirements, not claims of current completion. The selected
 
 ### 23.1 Decision and contribution boundary
 
-- [ ] Registered in-process optional packaging is the single selected technical target.
-- [ ] Required upstream acceptance is evidenced or still explicitly marked pending; contributor approval is not mislabeled as maintainer approval.
+- [x] D11's bundled, registered, default-enabled fork packaging is the single selected technical target.
+- [x] Upstream acceptance remains separately evidenced or explicitly pending; fork-owner approval is not mislabeled as maintainer approval.
 - [ ] The complete diff is traceable to this plan; no unrelated code, dependency, test, CI, schema, or documentation changes remain.
 - [ ] The original feature is preserved, not recreated, and recorded native evidence retains its actual SHA and limitations.
 
@@ -1658,7 +1673,7 @@ Unchecked items are requirements, not claims of current completion. The selected
 ### 23.5 Application and verification
 
 - [ ] Single/batch enforcement, team/share capabilities, effective permissions, summaries, list pagination/counts, and direct-resource results agree.
-- [ ] Optional packaging, model resources, actual registration, and default/no-extra compatibility pass.
+- [x] Bundled packaging/model resources, default registration/enforcement, explicit disable/replacement and standalone LFX compatibility pass. See D11's verification ledger for current checks and installed-artifact source equivalence.
 - [ ] Real Python Casbin service/compiler/database tests execute on required supported runtimes and SQLite/PostgreSQL.
 - [ ] All eight connected authorization E2E journeys execute and pass against the combined candidate, with real distinct users and zero feature retries.
 - [ ] Applicable inherited checks remain intact; no skip/mock/reporting loophole produces false-green acceptance.
@@ -1696,7 +1711,7 @@ Do not introduce:
 
 ## 25. Sources, evidence, and revision reconciliation
 
-### 25.1 Evidence categories
+### 25.1 Revision 1.7 evidence categories (historical)
 
 **Source baseline [P1].** The attached Revision 1.6 is the product/structure baseline. Its recorded branch/candidate/migration/PR identifiers and test claims are historical. Sections 8–18 retain those product contracts and add only decision-linked integration clarifications.
 
@@ -1708,7 +1723,7 @@ Do not introduce:
 
 **External technical verification [T1–T5].** Official database, ORM, and Casbin documentation supports the limited primitive/packaging facts cited in the relevant sections. The complete transaction/snapshot protocol is the selected integration design and still requires implementation tests; documentation does not certify it.
 
-### 25.2 Source index
+### 25.2 Revision 1.7 source index (historical)
 
 - **[P1]** `auth_share_implementation_plan_updated_latest 002(1).md`, supplied Revision 1.6, September 6, 2026. This document supersedes it as Revision 1.7 without altering the original attachment.
 - **[P2]** Supplied community response / `Pasted markdown(3).md`: four-field model; same-`g` team management; compiler excerpts; domain-chain evaluation; reported Go Casbin v2.135.0 and Python Casbin 1.43.0 tests; explicit storage/service/E2E limitations.
@@ -1726,9 +1741,9 @@ Do not introduce:
 - **[T4]** Publisher package documentation for the Python distribution/import `casbin`; the cited version is a reproduction reference, not a latest-version or production-compatibility claim. `https://pypi.org/project/casbin/1.43.0/`
 - **[T5]** SQLAlchemy 2.0 official transaction and SQLite dialect documentation: session transaction ownership/isolation and actual SQLite driver transaction-control differences. `https://docs.sqlalchemy.org/en/20/orm/session_transaction.html` and `https://docs.sqlalchemy.org/en/20/dialects/sqlite.html`
 
-### 25.3 Remaining evidence, not new architecture alternatives
+### 25.3 Evidence outstanding at Revision 1.7 (historical)
 
-The following remain to be established during the authorized implementation workflow:
+The following were outstanding when Revision 1.7 was written. Current execution evidence is recorded in the verification ledger and audit; D11 supersedes only the fork delivery/default requirements:
 
 - Actual current repository heads/instructions and the exact final integrated candidate.
 - Maintainer acceptance required for production adoption/source-tree placement.
@@ -1737,7 +1752,7 @@ The following remain to be established during the authorized implementation work
 - Complete policy-writer inventory, actual session/lock/snapshot integration, and real SQLite/PostgreSQL correctness results.
 - Combined service/capability/list/runtime/E2E acceptance and measured performance/limits.
 
-Do not fill these gaps with claims of completed work. Their absence does not authorize a parallel implementation, alternate deployment, broader contribution, or weakened test.
+Historical gaps are not closed by this list. Use the current evidence records to establish their disposition; no parallel implementation, alternate deployment, broader contribution or weakened test is authorized.
 
 ### 25.4 What Revision 1.7 changes from 1.6
 
@@ -1756,3 +1771,9 @@ Do not fill these gaps with claims of completed work. Their absence does not aut
 ---
 
 **Revision 1.7 outcome:** the selected integration is now specified as one optional registered backend Casbin service, with concrete modules, preserved domain/API/product semantics, complete scoped-role compilation, exact-team management, explicit creation, transaction-owned differential policy reconciliation, database writer ordering, coherent fresh reads, and combined verification. Product scope is unchanged. No code, branch, issue/PR, migration, repository setting, or deployment was modified by this document update. No combined Langflow–Casbin runtime test result is claimed.
+
+### 25.5 Revision 1.8 fork-default reconciliation
+
+Revision 1.8 records the owner's explicit approval of D11. It changes the fork's packaging, registration and enforcement-default acceptance contract and separates upstream adoption from fork completion. Sections 4, 18, 19, 20, 21, WP-02/WP-04/WP-07 and the corresponding completion criteria now use that same contract. The Revision 1.7 provenance above remains historical, including its original optional-packaging choice.
+
+ARCH-05/06/07 and EXT-02 are complete under D11: current implementation inspection, 10 passing factory/default tests, four real-discovery probes and exact source comparisons establish the contract. The [verification ledger](docs/auth-team-sharing-verification.md#fork-default-contract-reconciliation--september-10-2026) records the commands, package provenance and inherited combined acceptance; [plan.md](plan.md) records completion of this bounded task. No permission-model, resource, team, API, UI, migration, provider, CI-selection or runtime-engine change is introduced. Other checklist entries retain their prior state; the audit remains the requirement-by-requirement evidence record, including deployment assumptions, external proposals, exclusions and validation limits.
