@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useLocation, useParams } from "react-router-dom";
+import { useHref, useLocation, useParams } from "react-router-dom";
 import PaginatorComponent from "@/components/common/paginatorComponent";
 import CardsWrapComponent from "@/components/core/cardsWrapComponent";
 import { useStartNewFlow } from "@/components/core/flowBuilderWelcome/hooks/use-start-new-flow";
@@ -49,6 +49,7 @@ const HomePage = ({ type }: { type: "flows" | "components" | "mcp" }) => {
   const [newProjectModal, setNewProjectModal] = useState(false);
   const { folderId } = useParams();
   const location = useLocation();
+  const renderedPathname = useHref(location.pathname);
   const [pageIndex, setPageIndex] = useState(1);
   const [pageSize, setPageSize] = useState(12);
   const [search, setSearch] = useState("");
@@ -78,6 +79,9 @@ const HomePage = ({ type }: { type: "flows" | "components" | "mcp" }) => {
   const startNewFlow = useStartNewFlow();
 
   useEffect(() => {
+    // A lazy destination can leave this page mounted after browser navigation.
+    // A late folder refresh must not redirect away from the user's new route.
+    if (window.location.pathname !== renderedPathname) return;
     // Only check if we have a folderId and folders have loaded
     if (folderId && folders && folders.length > 0) {
       const folderExists = folders.find((folder) => folder.id === folderId);
@@ -87,7 +91,7 @@ const HomePage = ({ type }: { type: "flows" | "components" | "mcp" }) => {
         navigate("/all");
       }
     }
-  }, [folderId, folders, navigate]);
+  }, [folderId, folders, navigate, renderedPathname]);
 
   // The page loads from `folderId ?? myCollectionId` (the default-collection
   // route omits the id), so permission checks must scope to the same project.
