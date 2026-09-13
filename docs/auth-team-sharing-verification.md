@@ -1,5 +1,96 @@
 # Authorization, teams, and sharing verification record
 
+## Requirement review — September 13, 2026
+
+**Candidate:** `60ec395cac2a54e7336cf0432015fbf6e7cd1053`, based on delivered merge `502c54fa07bd5c41a229857dda1ac0acbc7b6f1b`, with backend correction `147497967f9b539d780e9b784bad27323141f536`. This review checks the accepted plan and audit against implementation and behavioral assertions, rather than treating earlier `DONE` labels or a green aggregate as sufficient proof. The audit's explicit EXEC exclusions and deployment assumptions remain unchanged.
+
+**Confirmed and corrected:** an empty or null-only `PATCH /api/v1/authz/teams/{team_id}` skipped all operation checks inside `patch_team`, then updated the timestamp, recorded a mutation and returned private team metadata. A real ASGI request using the registered Casbin service reproduced an outsider receiving 200. The existing canonical mutation now requires `TeamOperation.UPDATE` for such patches. Roster-only Maintainer operations retain their own existing checks. This repairs plan §§5.6, 8.2, 14.1 and audit TEAM-05/06/07 without a new policy path, API, schema or product journey.
+
+`test_empty_team_patch_requires_metadata_authority` covers empty and null-only payloads for outsider, User, Maintainer, Admin and Platform Admin: unauthorized callers receive 403, no metadata, no timestamp change and no new mutation audit; authorized administrators retain success. Before the fix the first outsider case failed with 200. After the fix all **26 collaboration tests pass**, including ten new cases. The compiler/model/store/factory selection passed **179 tests** before this correction; its production files are unchanged by the correction. Both local selections used Windows/Python 3.12, real SQLite and Casbin; each reported one inherited Starlette warning. Scoped Ruff format/check and `git diff --check` pass.
+
+**Browser finding and correction:** the first review run passed J1–J7 but failed J8 after switching the owner's existing browser to the direct recipient. Trace `2-trace.trace` shows the browser reaching `/shared-with-me`, then the prior HomePage logging `Invalid folderId, redirecting to /all` and replacing that navigation. The old project page can remain mounted while the lazy destination loads; a late refresh of the new user's folders therefore redirected the new route. HomePage now applies its existing unavailable-project redirect only while its rendered pathname is still the browser's current pathname. `useHref` includes the configured router basename. The existing project-page test file adds a current-route redirect case and a navigation-race negative case: without the guard one test fails and three pass; with it all four pass. Scoped Biome checks pass. No permission, route, UI text, retry, timeout or journey assertion was weakened.
+
+**Combined acceptance: PASSED for the approved plan scope.** [Run 34774822659](https://github.com/waqoor/langflow/actions/runs/34774822659) completed successfully on `60ec395cac2a54e7336cf0432015fbf6e7cd1053`: **41 successful jobs, eight conditional skips, no failures/cancellations**, aggregate gate `103777051374`. Its explicit comparison base is delivered merge `502c54fa07`. The separate full-core [run 34774824410](https://github.com/waqoor/langflow/actions/runs/34774824410) also passed. Both scoped corrections are included in this same tested source. Superseded attempts below remain historical, not successful final acceptance.
+
+Dispatches `34774739734` and `34774741373` failed during checkout because the supplied abbreviated SHA was interpreted as a branch. No tests executed; the corrected dispatches above use the full 40-character SHA. These are invocation failures, not test passes or product failures.
+
+The final candidate's required backend matrix has passed **496 tests per configuration**, with no failures/skips/deselections/retries: Python 3.10 SQLite/PostgreSQL 16 jobs `103771045240` / `103771045247` (one warning each), and Python 3.14 SQLite/PostgreSQL 16 jobs `103771045237` / `103771045243` (three warnings each). Each completed log includes the new empty-PATCH regressions. These are final-candidate results, separate from the superseded run below.
+
+Final-candidate Biome (`103771045396`) and ARM64 Docker build/install/health (`103771045507`) pass. Docker passed its first attempt, so conditional retry `103772431230` was skipped.
+
+Final-candidate Jest job `103771045409` passes **572 suites / 6,702 tests**, including both new project-navigation regressions, with no failed or pending cases.
+
+**Full-core browser acceptance passed:** run `34774824410` completed successfully with 41 successful jobs and two conditional live-provider/store skips. All 39 shards and report gate `103775734130` passed. Independently parsed JSON records **179 passed, 12 skipped, zero unexpected/flaky results** across 191 selected tests; no result has a retry above zero. The 12 existing skips remain explicitly unexecuted (four shareable-playground cases, tags, tracing, three voice cases, Research Translation Loop, FloatComponent and InputComponent). Temporary artifact: `langflow-auth-review-final-core-reports/json-report-core-Linux-attempt-1/playwright-report.json`.
+
+**Final authorization journeys:** job `103771288935` and report gate `103776825216` passed. Independently parsed JSON verifies exactly J1–J8, each with one passed result and retry 0, one worker, zero skipped/flaky/unexpected cases. J8 now completes account switching, Shared with me navigation and the direct-share privacy checks. Temporary artifact: `langflow-auth-review-final-authz-reports/json-report-authz-Linux-attempt-1/playwright-report.json`.
+
+**Final accessibility evidence:** nine downloaded IBM scans report zero confirmed violations, zero ignored findings, 13,925 passing rule results, 184 potential violations, four potential recommendations and nine manual results. These remaining potential/manual findings and native assistive-technology limits are not certified as resolved. Historical accessibility unit evidence remains labeled below; this change does not alter rendered labels or control markup.
+
+All ten inherited general backend groups, both Python versions' LFX/integration/CLI/bundle checks, starter templates, frontend Jest/Biome/core reports and Docker pass on the final candidate. Their inherited skip/expected-failure/retry policies remain in effect. Docs build/IBM and CI-script source are unchanged from the separately recorded successful merge checks; conditional skips in the current changed-path run are not new test passes. No package/image publication or deployment was performed.
+
+**Superseded review evidence (`147497967f`):** [run 34773123270](https://github.com/waqoor/langflow/actions/runs/34773123270) ran all four backend configurations and exposed the J8 race. Its inherited core browser job selected changed-path suites despite the parent CI's `run-all-tests` input: downloaded JSON confirms **19 passed, one skipped, zero unexpected/flaky results**. Jest passed **572 suites / 6,700 tests**. The additional full-core [run 34774071127](https://github.com/waqoor/langflow/actions/runs/34774071127) was stopped when the UI correction superseded it; its partial results are not full-core acceptance. No workflow, filter, retry or skip configuration was changed.
+
+On that backend-identical candidate, all four required backend combinations completed with **496 passes each**, including the ten new role/payload cases, with zero failures, skips, deselections or retries. Python 3.10.20 SQLite/PostgreSQL 16 jobs are `103766334046` / `103766334063` (one warning each); Python 3.14.7 SQLite/PostgreSQL 16 jobs are `103766334175` / `103766334094` (three warnings each). Each records Casbin 1.43.0 and SQLite runtime 3.53.1. Raw logs are retained at temporary `langflow-auth-review-<job-id>.log` paths. The current endpoint inventory validator and all **21** endpoint/workflow contract tests also pass; their claim remains limited to the declared route scope. ARM64 Docker build/install/health passed on its first attempt (`103766334227`); its conditional retry was skipped.
+
+**Current distribution check:** `uv build --package langflow-base --wheel --sdist --out-dir <temporary-directory>` rebuilt version 1.12.1 from the corrected candidate. Both archives contain byte-identical current `team_management.py` and `casbin/model.conf`; wheel metadata has unconditional `Requires-Dist: casbin<1.44.0,>=1.43.0`. This verifies packaged source and dependency identity, alongside the separate runtime/default tests; it does not claim a fresh minimal-dependency installation.
+
+**Recorded performance sample:** a fresh execution of `test_project_share_growth_and_admission_cost` passed on local Windows/Python 3.12/SQLite and retained its properties in temporary `langflow-auth-review-performance.xml`. With 202 users and 1,001 flows it produced 431 rules, loaded 12 rules for the caller, and performed zero no-op writes. Compilation took 32.17 ms with 172,617 bytes peak traced allocation; lock wait/hold were 0.59/53.22 ms. Single admission used six queries/10.34 ms, a 1,000-resource batch ten queries/411.20 ms, and compact list scope seven queries/9.11 ms. This is one local sample, not an SLO or cross-machine regression comparison. The unchanged fixture also passed in all four hosted matrix jobs. The local run reported the inherited Starlette warning and pytest's xunit2 property-compatibility warning; the property values were independently read from the generated XML.
+
+**Current typing comparison:** fresh `tsc --noEmit --pretty false` on delivered merge `502c54fa07` and corrected source `60ec395cac` each exits 2 with 252 diagnostics. Comparing file/code/message with multiplicity after normalizing checkout roots and moved line numbers yields zero added or removed diagnostics. This establishes no introduced typing diagnostics, not a clean project-wide type check. Temporary outputs are `langflow-auth-review-tsc-base.log` and `langflow-auth-review-tsc-current.log`.
+
+### Requirement-to-evidence crosswalk
+
+The existing 117-row audit remains the detailed product/architecture inventory. All rows were reconciled with the approved D11 contract and their actual status; excluded requirements are not counted as implemented. The following adds the explicitly numbered compiler and transaction cases from plan §20 that were previously implicit in the audit. Test names below refer to `src/backend/tests/unit/services/authorization/casbin_spec/` unless a different suite is named. A fixture tests its stated boundary, not arbitrary deployment capacity or every external integration.
+
+| Plan case | Behavioral evidence inspected |
+|---|---|
+| PC-01 | `test_compiler.py::test_output_is_deterministic_and_duplicate_sources_survive_independent_removal` shuffles canonical inputs and checks sorted, deduplicated output. |
+| PC-02 | `test_store.py::test_reconciliation_preserves_unchanged_ids_and_removes_duplicates`; `test_service.py::test_staged_grant_and_revocation_use_the_caller_transaction`. |
+| PC-03 | Compiler malformed-policy/request/UUID cases and model negative matcher-mutation cases; parsing precedes actual enforcement. |
+| PC-04 | Compiler canonical-domain consistency cases and `test_model.py::test_domain_union_uses_explicit_scopes_and_never_literal_domain_patterns`. |
+| PC-05 | Compiler parent depth, missing/cyclic parent, finite permission expansion and legacy/manual/IdP provenance cases. |
+| PC-06 | `test_compiler.py::test_role_and_assignment_scopes_intersect_without_widening` covers all assignment/restriction combinations. |
+| PC-07 | Compiler project-move test plus `test_transactions.py::test_concurrent_project_move_intersects_final_role_workspace`. |
+| PC-08 | Model exact-team matrix and `test_one_grouping_relation_keeps_both_principal_kinds_without_identity_collision`. |
+| PC-09 | `test_model.py::test_all_team_roles_share_equally_without_resource_management_escalation`; J1/J4 use persisted memberships. |
+| PC-10 | The same model test starts without grants and separately denies management escalation through resource access. |
+| PC-11 | Model finite old/new role matrix; collaboration roster tests and the new empty-PATCH real API regression. |
+| PC-12 | Model rejects platform-only actions for ordinary team roles; collaboration tests exercise real platform creation and denied Maintainer promotion. |
+| PC-13 | Compiler/model suspension cases and `test_transactions.py::test_late_events_cannot_restore_suspended_team_access`. |
+| PC-14 | Compiler disabled-user cases; transaction user-reactivation case restores only surviving canonical authority. |
+| PC-15 | Compiler direct-share/move case; J8 tests direct access, private parent/sibling denial and authenticated list contents. |
+| PC-16 | Compiler project inheritance/fanout case; J4 creates a future child after the persisted project share. |
+| PC-17 | Model inherited-create and concrete-role-write cases; RBAC integration creates a child in a shared project with caller ownership. |
+| PC-18 | Model inherited-create test denies child delete; project API complete-delete-set checks remain separate from project-object permission. |
+| PC-19 | Compiler finite role expansions and model concrete-role-write test distinguish role slugs from share levels. |
+| PC-20 | Collaboration superuser/resource-resolution and credential-ceiling tests; transaction inactive-owner visibility tests. |
+| PC-21 | Model role-derived share-administration case; repository `user_can_manage_resource_shares` delegates to the selected service. |
+| PC-22 | Compiler duplicate-source removal; model direct-share survival; J5 revokes membership while preserving an independent direct grant. |
+| PC-23 | Canonical-domain personal-resource tests; transaction personal-variable collection active-owner/ceiling cases. |
+| PC-24 | Compiler PUBLIC/PRIVATE cases emit no authenticated grant; selected service retains explicit public admission. Deferred EXEC boundaries remain outside this proof. |
+| PC-25 | Model grouping-kind separation; transaction mixed grouping/policy snapshot test uses independent connections. |
+| PC-26 | Compiler malformed policy/object/UUID cases and model matcher-mutation negatives exercise the constrained grammar. |
+| TX-01 | Store failed-compile rollback and transaction failed-share-mutation `compiler` case. |
+| TX-02 | Transaction failed-share-mutation `derived` and `audit` cases inject failures into real SQL execution. |
+| TX-03 | Transaction waiting-writer/revocation test proves the waiter cannot acquire early and cannot restore the revoked grant. |
+| TX-04 | Waiting-writer/rebuild, concurrent role/workspace move and real final-admin demotion tests cover ordered mutations and final policy. |
+| TX-05 | Waiting-writer test initializes two actual service instances concurrently and verifies the final canonical projection. |
+| TX-06 | Concurrent project-move/role-workspace intersection test covers both matching and nonmatching final workspaces. |
+| TX-07 | Two-worker committed-revocation test denies on both service instances after commit. |
+| TX-08 | Mixed grouping/policy test pauses between database reads, commits a second denied state, and verifies no fabricated allow. |
+| TX-09 | The same snapshot test plus download/content interleaving verifies canonical data and policy belong to one admission. |
+| TX-10 | Deployment-repair retry test verifies lock release and reauthorization; stale project-row test and J7 retain original revisions. |
+| TX-11 | Waiting-writer test calls the early resource hook without narrowing hints; no lock/policy generation is inferred from metadata. |
+| TX-12 | Staged-identity test admits the owning authentication session and denies a concurrent task before commit. |
+| TX-13 | Capability/no-op reconciliation test asserts no compiler/reconciliation writes; growth fixture confirms zero no-op rule writes. |
+| TX-14 | Two-worker test retains the already admitted snapshot and denies later admissions; no retroactive cancellation is claimed. |
+| TX-15 | Existing lifecycle suite plus transaction file/deployment/provider/memory/import/starter/user cleanup cases exercise actual orchestration. |
+| TX-16 | Late-event test calls legacy notification hooks after suspension and verifies they cannot restore authority. |
+| TX-17 | Suspension test preserves exact-team read while resource access is denied. |
+| TX-18 | Cancelled-writer test reacquires the lock on a new connection and verifies no partial canonical/derived publication. |
+
+The representative growth test records compiler time/peak allocation, lock wait/hold, no-op writes, single/batch/list query counts and loaded-rule count for 202 users and 1,001 direct flows. Its assertions prevent child/member resource-grant fanout; it is not a production SLO. The API/UI review also inspected selected-service visibility and capability derivation, protected flow fields, strong revision checks, identity-keyed permission queries, login/logout cache clearing, Share dialog modes, and J6/J7 draft preservation/no replay. The normal pass-through service is an explicit compatibility selection; `effective_access` delegates to Casbin and no `team_operation_allowed` runtime evaluator remains.
+
 ## Upstream merge — September 13, 2026
 
 **Combined candidate:** `a29bda19a62b536df985754071541bde70b43627`, with fork parent `5111f56569b8626a27d3b616328b1c03779bdb2a` and upstream parent `595cd72a2b2021f2375fa31109af02d20bb17648`. The merge is on `merge/upstream-20260913` in `waqoor/langflow`. The user's working copies of plan 003 revision 1.8 and the audit were carried into the candidate; their original worktree copies were preserved.

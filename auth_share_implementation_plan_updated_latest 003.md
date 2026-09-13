@@ -1,5 +1,7 @@
 # Authentication, Authorization, Teams, and Resource Sharing — Implementation Plan
 
+**September 13 requirement review:** candidate `60ec395cac2a54e7336cf0432015fbf6e7cd1053` corrects the existing team PATCH operation check (§§5.6, 8.2, 14.1) and an account-switch/Shared with me navigation race (§§7, 15, 20.5). Both have failing-before/passing-after regressions. [Current review evidence](docs/auth-team-sharing-verification.md#requirement-review--september-13-2026) maps the numbered compiler and transaction cases and records successful final combined/full-core acceptance. This review does not authorize or implement anything outside this plan or reopen the audit's excluded work.
+
 **September 13, 2026 merge verification:** this revision's approved requirements remain unchanged. Combined candidate `a29bda19a62b536df985754071541bde70b43627` merges upstream `595cd72a2b2021f2375fa31109af02d20bb17648` and passes the required authorization matrix (486 tests in each of four combinations), all eight zero-retry journeys, and applicable combined CI. See [the current verification ledger](docs/auth-team-sharing-verification.md#upstream-merge--september-13-2026) and [audit verdict](is_auth_done.md). The earlier candidate identifiers and evidence below remain historical; the audit's explicit exclusions and deployment assumptions are not certified by this merge.
 
 **Document revision:** 1.8  
@@ -15,7 +17,7 @@
 
 **Decision status:** the repository owner explicitly approved the fork-default recommendation and requested this amendment and its implementation verification. D11 resolves audit decision EXT-02 and the target for ARCH-05/06/07. Upstream maintainer acceptance remains **not established** and is required for an upstream adoption claim, separately from completion of this fork delivery. There is no native/Casbin runtime selector.
 
-**Validation status:** the verification ledger records combined Casbin acceptance on functional candidate `944b35148d0ef8d72c6613b5b0164b2f32799bee`. Current HEAD `5111f56569b8626a27d3b616328b1c03779bdb2a` has identical runtime/test/build/CI source. D11 verification passes 10 focused tests and four isolated real-configuration probes. The existing implementation satisfies the approved contract; this round changes documentation only. Historical native and standalone model results remain separate evidence; this amendment does not certify excluded work or upstream adoption.
+**Historical validation status (D11 amendment):** the verification ledger records combined Casbin acceptance on functional candidate `944b35148d0ef8d72c6613b5b0164b2f32799bee`. The amendment's HEAD `5111f56569b8626a27d3b616328b1c03779bdb2a` has identical runtime/test/build/CI source. D11 verification passes 10 focused tests and four isolated real-configuration probes. The existing implementation satisfies the approved contract; that amendment changed documentation only. Historical native and standalone model results remain separate evidence; this amendment does not certify excluded work or upstream adoption.
 
 ### Approved fork-delivery amendment — D11
 
@@ -1540,7 +1542,7 @@ Verify:
 - No released upstream image/package is used as evidence for the unbuilt fork candidate.
 - Historical baseline typing/optional-provider/release-conditional limitations remain explicit and are not relabeled as newly fixed or executed.
 
-Package the selected dependency through the backend extra and the existing lockfile process. Keep LFX framework-neutral. Do not add tests into deployment execution, generate migrations during runtime, change unrelated workflows/dependencies, or create a Go build pipeline for standalone contributor assertions.
+Package the selected dependency as a normal backend dependency under D11, retain the `authorization` compatibility extra, and use the existing lockfile process. Keep LFX framework-neutral. Do not add tests into deployment execution, generate migrations during runtime, change unrelated workflows/dependencies, or create a Go build pipeline for standalone contributor assertions.
 
 ---
 
@@ -1622,65 +1624,65 @@ Review the complete diff, remove only own unrelated changes, verify no retained 
 
 ## 23. Definition of done
 
-Unchecked items are requirements, not claims of current completion. The selected replacement is complete only with evidence from its final integrated candidate.
+September 13 reconciliation uses final functional candidate `60ec395cac` and the [current review ledger](docs/auth-team-sharing-verification.md#requirement-review--september-13-2026). Checked items are established within the approved repository scope. Two broader claims remain unchecked because the audit explicitly excludes part of the execution/dependency boundary and cannot certify every deployment writer. They are not new implementation tasks or claims of completion.
 
 ### 23.1 Decision and contribution boundary
 
 - [x] D11's bundled, registered, default-enabled fork packaging is the single selected technical target.
 - [x] Upstream acceptance remains separately evidenced or explicitly pending; fork-owner approval is not mislabeled as maintainer approval.
-- [ ] The complete diff is traceable to this plan; no unrelated code, dependency, test, CI, schema, or documentation changes remain.
-- [ ] The original feature is preserved, not recreated, and recorded native evidence retains its actual SHA and limitations.
+- [x] The complete diff is traceable to this plan; no unrelated code, dependency, test, CI, schema, or documentation changes remain.
+- [x] The original feature is preserved, not recreated, and recorded native evidence retains its actual SHA and limitations.
 
 ### 23.2 Product behavior
 
-- [ ] Team creation is atomic/non-empty and nominates required active Admin membership; active teams retain the invariant through all writers.
-- [ ] Admin/Maintainer/User remain team-scoped and never become platform superusers or implicit resource owners.
-- [ ] All eligible active members receive team shares equally; promotion alone does not revoke them.
-- [ ] Suspended teams confer no resource access while existing permitted management/repair behavior is preserved.
-- [ ] Owners share with existing users/teams; Can use/Can edit retain execute/write mapping.
-- [ ] Project inheritance covers current/future direct flows without child or per-member grant fanout.
-- [ ] Direct shares remain exact-resource grants and preserve private parent/sibling boundaries through permitted moves.
-- [ ] Creator ownership and recipient execution/dependency boundaries remain intact.
-- [ ] Ordinary editing does not imply sharing, deletion, transfer, move, publication, authentication, or deployment authority.
-- [ ] Stale/revoked writes are rejected without replay; unsaved local content is preserved.
-- [ ] Existing public, API-key, external-auth, and owner-scoped transport contracts remain intact.
+- [x] Team creation is atomic/non-empty and nominates required active Admin membership; active teams retain the invariant through all writers.
+- [x] Admin/Maintainer/User remain team-scoped and never become platform superusers or implicit resource owners.
+- [x] All eligible active members receive team shares equally; promotion alone does not revoke them.
+- [x] Suspended teams confer no resource access while existing permitted management/repair behavior is preserved.
+- [x] Owners share with existing users/teams; Can use/Can edit retain execute/write mapping.
+- [x] Project inheritance covers current/future direct flows without child or per-member grant fanout.
+- [x] Direct shares remain exact-resource grants and preserve private parent/sibling boundaries through permitted moves.
+- [ ] Creator ownership and recipient execution/dependency boundaries remain intact. Creator ownership and tested caller identity are preserved; EXEC-02/03/05/06 remain explicitly excluded, so the full dependency-boundary claim is not certified.
+- [x] Ordinary editing does not imply sharing, deletion, transfer, move, publication, authentication, or deployment authority.
+- [x] Stale/revoked writes are rejected without replay; unsaved local content is preserved.
+- [x] Existing public, API-key, external-auth, and owner-scoped transport contracts remain intact.
 
 ### 23.3 Model, compiler, and authority
 
-- [ ] `authz_*` plus canonical user/resource state is the sole writable policy authority; `casbin_rule` is rebuildable derived state.
-- [ ] One registered `BaseAuthorizationService` implementation owns all scoped-role/share/team policy decisions and derived capabilities.
-- [ ] One minimal `g` relation represents separate team sharing and team-management principals; no additional graph system exists.
-- [ ] Subject/domain/object/action contracts are preserved; object normalization is internal and validated.
-- [ ] Domains use canonical project/workspace/`*` evaluation; no workspace or team containment is invented.
-- [ ] Role scope compilation includes the assigned role's workspace restriction, assignment domain, parent semantics, provenance, and explicit wildcard expansion.
-- [ ] Containment/role updates reconcile affected restrictions without stale grants.
-- [ ] Creation remains `flow:*` with `create`; no alternative `project/P + flow:create` permission shape exists.
-- [ ] Team operations are finite and target-aware; platform-only actions remain platform-only.
-- [ ] No wildcard admin authority, explicit-deny/priority expansion, synthetic owner role, or personal-team model exists.
-- [ ] Native `effective_access*`, `team_operation_allowed()`, scoped-role evaluation, and other retired final decision paths are not reachable in the delivered runtime.
+- [x] `authz_*` plus canonical user/resource state is the sole writable policy authority; `casbin_rule` is rebuildable derived state.
+- [x] One registered `BaseAuthorizationService` implementation owns all scoped-role/share/team policy decisions and derived capabilities.
+- [x] One minimal `g` relation represents separate team sharing and team-management principals; no additional graph system exists.
+- [x] Subject/domain/object/action contracts are preserved; object normalization is internal and validated.
+- [x] Domains use canonical project/workspace/`*` evaluation; no workspace or team containment is invented.
+- [x] Role scope compilation includes the assigned role's workspace restriction, assignment domain, parent semantics, provenance, and explicit wildcard expansion.
+- [x] Containment/role updates reconcile affected restrictions without stale grants.
+- [x] Creation remains `flow:*` with `create`; no alternative `project/P + flow:create` permission shape exists.
+- [x] Team operations are finite and target-aware; platform-only actions remain platform-only.
+- [x] No wildcard admin authority, explicit-deny/priority expansion, synthetic owner role, or personal-team model exists.
+- [x] Native `effective_access*`, `team_operation_allowed()`, scoped-role evaluation, and other retired final decision paths are not reachable in the delivered runtime.
 
 ### 23.4 Storage, freshness, and readiness
 
-- [ ] The store uses the existing model and caller-owned sessions; no AutoSave, independent commits, adapter schema, or second policy datastore exists.
-- [ ] Desired-rule reconciliation changes only semantic insertions/deletions and is deterministic/idempotent.
-- [ ] Every policy-relevant canonical writer and rebuild participates in early writer ordering before authoritative reads.
-- [ ] PostgreSQL advisory locking and SQLite early write transactions are verified through actual database behavior.
-- [ ] Required canonical/derived/audit changes are atomic; failure, cancellation, and retry cannot publish partial state.
-- [ ] Concurrent rebuild/revocation and role/move tests cannot restore obsolete policy.
-- [ ] Fresh admission snapshots load canonical context and grouping/policy consistently; new requests observe committed revocation across workers.
-- [ ] Caller-owned authentication/JIT/write sessions retain correct visibility without separate-connection regressions.
-- [ ] Read snapshots end before long-running execution; no long-lived positive policy cache or generation authority is introduced.
-- [ ] Startup/rebuild is safe across workers, unknown prior policy is not silently destroyed, and selected-plugin failures cannot fall back to the OSS stub/native evaluator.
+- [x] The store uses the existing model and caller-owned sessions; no AutoSave, independent commits, adapter schema, or second policy datastore exists.
+- [x] Desired-rule reconciliation changes only semantic insertions/deletions and is deterministic/idempotent.
+- [ ] Every policy-relevant canonical writer and rebuild participates in early writer ordering before authoritative reads. In-repository writers and rebuilds are verified; universal deployment-writer participation remains ASM-02.
+- [x] PostgreSQL advisory locking and SQLite early write transactions are verified through actual database behavior.
+- [x] Required canonical/derived/audit changes are atomic; failure, cancellation, and retry cannot publish partial state.
+- [x] Concurrent rebuild/revocation and role/move tests cannot restore obsolete policy.
+- [x] Fresh admission snapshots load canonical context and grouping/policy consistently; new requests observe committed revocation across workers.
+- [x] Caller-owned authentication/JIT/write sessions retain correct visibility without separate-connection regressions.
+- [x] Read snapshots end before long-running execution; no long-lived positive policy cache or generation authority is introduced.
+- [x] Startup/rebuild is safe across workers, unknown prior policy is not silently destroyed, and selected-plugin failures cannot fall back to the OSS stub/native evaluator.
 
 ### 23.5 Application and verification
 
-- [ ] Single/batch enforcement, team/share capabilities, effective permissions, summaries, list pagination/counts, and direct-resource results agree.
+- [x] Single/batch enforcement, team/share capabilities, effective permissions, summaries, list pagination/counts, and direct-resource results agree.
 - [x] Bundled packaging/model resources, default registration/enforcement, explicit disable/replacement and standalone LFX compatibility pass. See D11's verification ledger for current checks and installed-artifact source equivalence.
-- [ ] Real Python Casbin service/compiler/database tests execute on required supported runtimes and SQLite/PostgreSQL.
-- [ ] All eight connected authorization E2E journeys execute and pass against the combined candidate, with real distinct users and zero feature retries.
-- [ ] Applicable inherited checks remain intact; no skip/mock/reporting loophole produces false-green acceptance.
-- [ ] Query/rule growth, reconciliation cost, lock contention, and single/batch/list performance are measured; material regressions are resolved or recorded as blockers.
-- [ ] Documentation, contributor PR/status, and verification evidence describe the same exact implementation and actual acceptance results.
+- [x] Real Python Casbin service/compiler/database tests execute on required supported runtimes and SQLite/PostgreSQL.
+- [x] All eight connected authorization E2E journeys execute and pass against the combined candidate, with real distinct users and zero feature retries.
+- [x] Applicable inherited checks remain intact; no skip/mock/reporting loophole produces false-green acceptance.
+- [x] Query/rule growth, reconciliation cost, lock contention, and single/batch/list performance are measured; material regressions are resolved or recorded as blockers.
+- [x] Documentation, contributor PR/status, and verification evidence describe the same exact implementation and actual acceptance results.
 
 ---
 
@@ -1778,4 +1780,4 @@ Historical gaps are not closed by this list. Use the current evidence records to
 
 Revision 1.8 records the owner's explicit approval of D11. It changes the fork's packaging, registration and enforcement-default acceptance contract and separates upstream adoption from fork completion. Sections 4, 18, 19, 20, 21, WP-02/WP-04/WP-07 and the corresponding completion criteria now use that same contract. The Revision 1.7 provenance above remains historical, including its original optional-packaging choice.
 
-ARCH-05/06/07 and EXT-02 are complete under D11: current implementation inspection, 10 passing factory/default tests, four real-discovery probes and exact source comparisons establish the contract. The [verification ledger](docs/auth-team-sharing-verification.md#fork-default-contract-reconciliation--september-10-2026) records the commands, package provenance and inherited combined acceptance; [plan.md](plan.md) records completion of this bounded task. No permission-model, resource, team, API, UI, migration, provider, CI-selection or runtime-engine change is introduced. Other checklist entries retain their prior state; the audit remains the requirement-by-requirement evidence record, including deployment assumptions, external proposals, exclusions and validation limits.
+ARCH-05/06/07 and EXT-02 are complete under D11: current implementation inspection, 10 passing factory/default tests, four real-discovery probes and exact source comparisons establish the contract. The [verification ledger](docs/auth-team-sharing-verification.md#fork-default-contract-reconciliation--september-10-2026) records the commands, package provenance and inherited combined acceptance; [plan.md](plan.md) records completion of this bounded task. No permission-model, resource, team, API, UI, migration, provider, CI-selection or runtime-engine change is introduced. Other checklist entries retained their prior state at the D11 amendment. The September 13 requirement review now reconciles Section 23 against final-candidate evidence; the audit continues to record deployment assumptions, external proposals, exclusions and validation limits.
