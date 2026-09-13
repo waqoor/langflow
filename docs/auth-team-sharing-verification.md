@@ -1,5 +1,37 @@
 # Authorization, teams, and sharing verification record
 
+## Upstream merge — September 13, 2026
+
+**Combined candidate:** `a29bda19a62b536df985754071541bde70b43627`, with fork parent `5111f56569b8626a27d3b616328b1c03779bdb2a` and upstream parent `595cd72a2b2021f2375fa31109af02d20bb17648`. The merge is on `merge/upstream-20260913` in `waqoor/langflow`. The user's working copies of plan 003 revision 1.8 and the audit were carried into the candidate; their original worktree copies were preserved.
+
+**Acceptance status: PASSED for the approved fork scope.** [Combined CI](https://github.com/waqoor/langflow/actions/runs/34769849001) passed on this exact candidate: 74 successful jobs, eight conditional skips, no failures/cancellations, and successful aggregate gate `103763646940`. Separate [accessibility unit tests](https://github.com/waqoor/langflow/actions/runs/34769869813) passed 101 suites / 447 tests, and [CI-script tests](https://github.com/waqoor/langflow/actions/runs/34769871901) passed 160 tests. This is fresh merge evidence, separate from the historical acceptance below.
+
+| Hosted acceptance | Final result on `a29bda19a6` |
+|---|---|
+| Required authorization matrix | 486 passed per combination, zero failures/skips/deselections/retries. Python 3.10.20: PostgreSQL 16 job `103757333031`, SQLite job `103757333061`; Python 3.14.7: PostgreSQL 16 job `103757333036`, SQLite job `103757333026`. Casbin 1.43.0; SQLite runtime 3.53.1. Both new migration upgrade cases execute in each job. |
+| Eight authorization journeys | Job `103757489539` and report gate `103759876471` pass. Downloaded JSON independently confirms J1–J8 each passed once, retry 0, one worker, no skipped/flaky/unexpected tests. |
+| Inherited frontend acceptance | All 35 core shards and report gate pass: downloaded JSON records 161 passed, 12 skipped, zero unexpected/flaky results. Main Jest passes 572 suites / 6,700 tests. Existing optional/core skips remain skips, not passes. |
+| Inherited backend/build acceptance | All ten general backend groups, both Python versions' LFX/integration/CLI/bundle checks, starter templates, Biome, docs build and docs IBM checks pass. General suites retain their existing skip/expected-failure/retry policies; their green jobs do not imply zero skipped/retried cases. ARM64 Docker build/install/health succeeds on its first attempt (`103757333144`); conditional retry is skipped. No image/package publication or deployment was performed. |
+| Authorization UI IBM reports | Nine downloaded scan reports have zero confirmed violations and zero ignored findings, 14,255 passing rule results, 190 potential violations, nine potential recommendations and nine manual results. The unresolved potential/manual and native assistive-technology limits remain explicit. |
+| TypeScript comparison | Both pre-merge fork and merged candidate produce 252 diagnostics. File/code/message comparison with multiplicity, normalizing checkout roots and moved line numbers, has zero differences. This is no introduced typing regression, not a clean full-project type check. |
+
+The merge used `git merge --no-commit --no-ff -X theirs upstream/main`. The two overlapping conflict areas were `.secrets.baseline` and `src/backend/base/pyproject.toml`. Incoming baseline metadata and upstream version changes take precedence. Review identified that the incoming dependency hunk also removed D11's required Casbin dependency; that single dependency was restored beside `lfx~=1.12.1`. `uv lock --offline` resolved the existing 856-package lock without unrelated dependency changes.
+
+Upstream's `d7e9f1a3b5c8` and the fork's `bf6c22022777` both descend from `c6d8e0f2a4b7`. The uncorrected merged graph reproduced Alembic `MultipleHeads` for `head`. The new no-DDL merge revision `e8a9b0c1d2f3` joins both histories without modifying either published migration. Two regression cases in the existing authorization migration suite upgrade from each prior head, retain a seeded canonical team, verify both branches' schema, and repeat the final upgrade idempotently. They are included in all four existing authorization CI combinations.
+
+| Check | Current evidence |
+|---|---|
+| SQLite migration integration, Windows/Python 3.12 | Three tests pass, including both new upgrade paths and the existing backfill/downgrade test; one inherited Starlette deprecation warning. Alembic resolves exactly `e8a9b0c1d2f3`. |
+| D11 factory/defaults | All 10 tests pass: bundled dependency metadata, default-on Casbin, explicit disable, explicit override preservation, LFX compatibility and initialization failure; one inherited Starlette warning. |
+| Endpoint inventory and mandatory CI gates | Inventory validator and all 21 existing endpoint/workflow contract tests pass. Declared-module scope remains unchanged. |
+| Focused frontend regression | 17 suites / 161 tests pass, including collaboration, stale saves, teams/admin, sharing and incoming select/scroll/provider-scope/edge-upgrade regressions. No failures or pending tests. |
+| Local policy/provider regression | 169 model/compiler/store tests and 87 variable/provider/environment-origin tests pass. Counts overlap hosted coverage and are not additional unique release cases. |
+| Built artifacts | Fresh `langflow-base` 1.12.1 wheel/sdist contain identical canonical `model.conf` bytes. Wheel metadata retains unconditional Casbin and upstream LFX version. Fresh LFX/base wheels installed into a separate environment pass default-on/explicit-disable/pre-initialization readiness/empty-policy-denial/LFX checks away from the checkout. Application import paths are asserted inside that environment; locked third-party test dependencies are reused, so this is not a minimal-dependency installation claim. |
+| Scope and architecture | Core backend/LFX authorization, Teams/share/permission UI surfaces and CI gating match the fork parent. Overlapping variable/model/memory integrations retain fork guards and transactional hooks while incorporating incoming changes. No second engine, API, policy store or product journey was added. |
+| Formatting | Scoped Ruff formatting/checks and migration validation pass. The imported plan retains the user's existing Markdown hard breaks, including two changed header lines reported by Git's generic trailing-whitespace check. |
+
+Local command outputs and downloaded reports are under the temporary `langflow-upstream-20260913-*` paths. Final documentation-only reconciliation preserves the tested runtime/test/build/CI source; promotion uses a fast-forward of the fork only. Existing audit exclusions, local-membership boundaries, deployment assumptions, upstream-adoption distinction, and manual accessibility limits remain in force. The scoped merge is validated; this does not establish unrestricted production readiness for deferred EXEC-02/03/05/06 or an unverified deployment.
+
 ## Six-item audit follow-up — September 9, 2026
 
 **Functional candidate:** `944b35148d0ef8d72c6613b5b0164b2f32799bee` on `validation/auth-six-20260909`, based on the audited `main` commit `b2b2172106a95367ebaf320c10b558e9f23537e9`. The user authorized implementation and testing of exactly `AUTH-07`, `TEST-02`, `TEST-04`, `TEST-05`, `TEST-06`, and `DOC-02` from `is_auth_done.md`. The authoritative revision 003 remains unchanged at SHA-256 `bfe357d1957961d625e24c7e70ed2b52ad697dd71c29e0d4b6d435e11350747b`.

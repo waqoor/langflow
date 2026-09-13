@@ -1,5 +1,7 @@
 # Authentication, Authorization, Teams, and Resource Sharing — Implementation Plan
 
+**September 13, 2026 merge verification:** this revision's approved requirements remain unchanged. Combined candidate `a29bda19a62b536df985754071541bde70b43627` merges upstream `595cd72a2b2021f2375fa31109af02d20bb17648` and passes the required authorization matrix (486 tests in each of four combinations), all eight zero-retry journeys, and applicable combined CI. See [the current verification ledger](docs/auth-team-sharing-verification.md#upstream-merge--september-13-2026) and [audit verdict](is_auth_done.md). The earlier candidate identifiers and evidence below remain historical; the audit's explicit exclusions and deployment assumptions are not certified by this merge.
+
 **Document revision:** 1.8  
 **Revision date:** September 10, 2026  
 **Source document:** `auth_share_implementation_plan_updated_latest 002(1).md`, Revision 1.6  
