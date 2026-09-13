@@ -315,6 +315,56 @@ async def test_team_mutations_enforce_real_roster_and_role_invariants(collaborat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("actor_role", ["outsider", "user", "maintainer", "admin", "platform"])
+@pytest.mark.parametrize("payload", [{}, {"team_name": None, "is_active": None, "member_upserts": []}])
+async def test_empty_team_patch_requires_metadata_authority(
+    collaboration_db: CollaborationDatabase,
+    actor_role: str,
+    payload: dict,
+):
+    """An empty PATCH must not bypass the role matrix or disclose another team's metadata."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from langflow.services.auth.utils import get_current_active_user
+
+    admin = _user("team-admin")
+    caller = _user("patch-caller", is_superuser=actor_role == "platform")
+    await _seed_users(collaboration_db, admin, caller)
+    team = AuthzTeam(team_name=f"private-{uuid4()}", adom_name=uuid4().hex)
+    async with collaboration_db.session() as seed:
+        seed.add(team)
+        await seed.flush()
+        seed.add(AuthzTeamMember(team_id=team.id, user_id=admin.id, role="admin"))
+        if actor_role in {"user", "maintainer", "admin"}:
+            seed.add(AuthzTeamMember(team_id=team.id, user_id=caller.id, role=actor_role))
+        await store.reconcile_policy(seed)
+        await seed.commit()
+    async with collaboration_db.session() as reader:
+        before = (await reader.get(AuthzTeam, team.id)).updated_at
+        audits_before = set((await reader.exec(select(AuthzAuditLog.id))).all())
+
+    async def actor():
+        return caller
+
+    app = FastAPI()
+    app.include_router(authz_teams.router)
+    app.dependency_overrides[get_current_active_user] = actor
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.patch(f"/authz/teams/{team.id}", json=payload)
+
+    permitted = actor_role in {"admin", "platform"}
+    assert response.status_code == (200 if permitted else 403), response.text
+    if permitted:
+        assert response.json()["id"] == str(team.id)
+    else:
+        assert response.json()["detail"]["code"] == "TEAM_OPERATION_FORBIDDEN"
+        assert team.team_name not in response.text
+        async with collaboration_db.session() as reader:
+            assert (await reader.get(AuthzTeam, team.id)).updated_at == before
+            assert set((await reader.exec(select(AuthzAuditLog.id))).all()) == audits_before
+
+
+@pytest.mark.asyncio
 async def test_concurrent_final_admin_demotions_commit_only_one_valid_result(
     collaboration_db: CollaborationDatabase,
 ):

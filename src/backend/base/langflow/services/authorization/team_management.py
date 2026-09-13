@@ -557,7 +557,10 @@ async def patch_team(
     )
     if patch.adom_name is not None and not actor_can_administer_platform(actor):
         raise _error(403, "TEAM_OPERATION_FORBIDDEN", "Only a Platform Admin may change the directory mapping.")
-    if metadata_change:
+    # An empty (or null-only) patch still touches metadata and returns the team.
+    # It must not bypass the role checks used by actual metadata updates.
+    metadata_only_patch = patch.is_active is None and not (patch.member_upserts or remove_ids)
+    if metadata_change or metadata_only_patch:
         await require_team_operation(session, actor=actor, team_id=team_id, operation=TeamOperation.UPDATE)
     if patch.is_active is not None and not actor_can_administer_platform(actor):
         raise _error(403, "TEAM_OPERATION_FORBIDDEN", "Only a Platform Admin may change team status.")
