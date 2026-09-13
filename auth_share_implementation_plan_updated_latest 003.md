@@ -1,16 +1,18 @@
 # Authentication, Authorization, Teams, and Resource Sharing — Implementation Plan
 
+**September 14 pre-PR validation:** the approved requirements remain unchanged. Source `c6e03722533e36d97e85e5fe052a116eb96c77a8` passes the fresh whole-contribution upstream CI comparison, all four 496-test authorization configurations and all eight zero-retry journeys. The independent full-core run passes 179 tests with 12 existing skips and zero retries. [Final gate evidence and limits](docs/auth-team-sharing-verification.md#pre-pr-upstream-gates--september-13-2026) retain the combined core flake, inherited backend reruns, typing limitations, excluded execution work and deployment assumptions. The separate local background real-service suite remains uncleared after a Linux timeout; passing hosted CI does not establish an all-gates-pass result. This validation does not authorize additional features or claim upstream adoption.
+
 **September 13 requirement review:** candidate `60ec395cac2a54e7336cf0432015fbf6e7cd1053` corrects the existing team PATCH operation check (§§5.6, 8.2, 14.1) and an account-switch/Shared with me navigation race (§§7, 15, 20.5). Both have failing-before/passing-after regressions. [Current review evidence](docs/auth-team-sharing-verification.md#requirement-review--september-13-2026) maps the numbered compiler and transaction cases and records successful final combined/full-core acceptance. This review does not authorize or implement anything outside this plan or reopen the audit's excluded work.
 
 **September 13, 2026 merge verification:** this revision's approved requirements remain unchanged. Combined candidate `a29bda19a62b536df985754071541bde70b43627` merges upstream `595cd72a2b2021f2375fa31109af02d20bb17648` and passes the required authorization matrix (486 tests in each of four combinations), all eight zero-retry journeys, and applicable combined CI. See [the current verification ledger](docs/auth-team-sharing-verification.md#upstream-merge--september-13-2026) and [audit verdict](is_auth_done.md). The earlier candidate identifiers and evidence below remain historical; the audit's explicit exclusions and deployment assumptions are not certified by this merge.
 
-**Document revision:** 1.8  
-**Revision date:** September 10, 2026  
-**Source document:** `auth_share_implementation_plan_updated_latest 002(1).md`, Revision 1.6  
-**Implementation repository:** `waqoor/langflow`  
-**Existing contribution branch:** `feat/auth-team-sharing`  
-**Fork delivery target:** `waqoor/langflow:main`  
-**Upstream reference:** `langflow-ai/langflow`  
+**Document revision:** 1.8\
+**Revision date:** September 10, 2026\
+**Source document:** `auth_share_implementation_plan_updated_latest 002(1).md`, Revision 1.6\
+**Implementation repository:** `waqoor/langflow`\
+**Existing contribution branch:** `feat/auth-team-sharing`\
+**Fork delivery target:** `waqoor/langflow:main`\
+**Upstream reference:** `langflow-ai/langflow`\
 **Related issue:** `langflow-ai/langflow#14932`
 
 **Selected technical design:** one bundled, registered, in-process Casbin-backed `BaseAuthorizationService` implementation within the existing Langflow backend package, installed and enabled by default for `waqoor/langflow`. This is a replacement of the native policy-decision core, not an additional evaluator.
